@@ -306,5 +306,35 @@ router.get("/disponibles", async (req, res) => {
   }
 });
 
+// 📝 Editar gusto y stock
+router.post("/editar/:gusto_id", async (req, res) => {
+  const { stock, sucursal_id, nuevoGusto } = req.body;
+  const { gusto_id } = req.params;
+
+  try {
+    // Actualizar nombre del gusto si es necesario
+    if (nuevoGusto) {
+      await pool
+        .promise()
+        .query("UPDATE gustos SET nombre = ? WHERE id = ?", [
+          nuevoGusto,
+          gusto_id,
+        ]);
+    }
+
+    // Actualizar stock
+    await pool
+      .promise()
+      .query(
+        "UPDATE stock SET cantidad = ? WHERE gusto_id = ? AND sucursal_id = ?",
+        [stock, gusto_id, sucursal_id]
+      );
+
+    res.json({ mensaje: "Producto actualizado correctamente" });
+  } catch (error) {
+    console.error("❌ Error al editar producto:", error);
+    res.status(500).json({ error: "Error al editar producto" });
+  }
+});
 
 module.exports = router;
