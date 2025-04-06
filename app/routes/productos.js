@@ -308,6 +308,7 @@ router.get("/disponibles", async (req, res) => {
 
 // 📝 Editar gusto y stock
 router.post("/editar/:gusto_id", async (req, res) => {
+  console.log(req.body);
   const { stock, sucursal_id, nuevoGusto } = req.body;
   const { gusto_id } = req.params;
 
