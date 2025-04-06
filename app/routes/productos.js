@@ -312,7 +312,7 @@ router.post("/editar/:gusto_id", async (req, res) => {
   const { gusto_id } = req.params;
 
   try {
-    // Actualizar nombre del gusto si es necesario
+    // Actualizar nombre del gusto si es necesari
     if (nuevoGusto) {
       await pool
         .promise()
