@@ -337,5 +337,25 @@ router.post("/editar/:gusto_id", async (req, res) => {
     res.status(500).json({ error: "Error al editar producto" });
   }
 });
+// ✅ Crear una nueva sucursal
+router.post("/sucursales", async (req, res) => {
+  const { nombre } = req.body;
+
+  if (!nombre) {
+    return res.status(400).json({ error: "Falta el nombre de la sucursal" });
+  }
+
+  try {
+    const [result] = await pool
+      .promise()
+      .query("INSERT INTO sucursales (nombre) VALUES (?)", [nombre]);
+
+    res.json({ mensaje: "Sucursal creada", id: result.insertId });
+  } catch (error) {
+    console.error("❌ Error al crear sucursal:", error);
+    res.status(500).json({ error: "No se pudo crear la sucursal" });
+  }
+});
+
 
 module.exports = router;
