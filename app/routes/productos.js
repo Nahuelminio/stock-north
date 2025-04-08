@@ -356,6 +356,40 @@ router.post("/sucursales", async (req, res) => {
     res.status(500).json({ error: "No se pudo crear la sucursal" });
   }
 });
+// 📄 Historial de ventas con detalle
+router.get("/historial-ventas", async (req, res) => {
+  const { sucursal_id } = req.query;
+  try {
+    let query = `
+      SELECT 
+        v.id,
+        s.nombre AS sucursal,
+        p.nombre AS producto,
+        g.nombre AS gusto,
+        v.cantidad,
+        v.fecha
+      FROM ventas v
+      JOIN gustos g ON v.gusto_id = g.id
+      JOIN productos p ON g.producto_id = p.id
+      JOIN sucursales s ON v.sucursal_id = s.id
+    `;
+
+    const params = [];
+
+    if (sucursal_id) {
+      query += " WHERE v.sucursal_id = ?";
+      params.push(sucursal_id);
+    }
+
+    query += " ORDER BY v.fecha DESC";
+
+    const [results] = await pool.promise().query(query, params);
+    res.json(results);
+  } catch (err) {
+    console.error("❌ Error al obtener historial de ventas:", err);
+    res.status(500).json({ error: "Error al obtener historial de ventas" });
+  }
+});
 
 
 module.exports = router;
