@@ -285,7 +285,8 @@ router.get("/disponibles", async (req, res) => {
   }
 
   try {
-    const [results] = await pool.promise().query(`
+    const [results] = await pool.promise().query(
+      `
       SELECT 
         gustos.id AS gusto_id,
         productos.nombre AS producto_nombre,
@@ -297,7 +298,9 @@ router.get("/disponibles", async (req, res) => {
       JOIN productos ON gustos.producto_id = productos.id
       JOIN sucursales ON stock.sucursal_id = sucursales.id
       WHERE stock.sucursal_id = ? AND stock.cantidad > 0
-    `, [sucursal_id]);
+    `,
+      [sucursal_id]
+    );
 
     res.json(results);
   } catch (error) {
@@ -388,6 +391,33 @@ router.get("/historial-ventas", async (req, res) => {
   } catch (err) {
     console.error("❌ Error al obtener historial de ventas:", err);
     res.status(500).json({ error: "Error al obtener historial de ventas" });
+  }
+});
+router.get("/ventas-mensuales", async (req, res) => {
+  const { mes, anio } = req.query;
+
+  if (!mes || !anio) {
+    return res.status(400).json({ error: "Faltan parámetros mes y año" });
+  }
+
+  try {
+    const [result] = await pool.promise().query(
+      `
+      SELECT 
+        s.nombre AS sucursal,
+        SUM(v.cantidad) AS total_ventas
+      FROM ventas v
+      JOIN sucursales s ON v.sucursal_id = s.id
+      WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?
+      GROUP BY v.sucursal_id
+    `,
+      [mes, anio]
+    );
+
+    res.json(result);
+  } catch (error) {
+    console.error("❌ Error al obtener ventas mensuales:", error);
+    res.status(500).json({ error: "Error al obtener ventas mensuales" });
   }
 });
 
