@@ -420,6 +420,33 @@ router.get("/ventas-mensuales", async (req, res) => {
     res.status(500).json({ error: "Error al obtener ventas mensuales" });
   }
 });
+// 📄 Historial de reposiciones
+// 📄 Historial de reposiciones
+router.get("/historial-reposiciones", async (req, res) => {
+  try {
+    const [results] = await pool.promise().query(`
+      SELECT 
+        r.fecha,
+        s.nombre AS sucursal,
+        p.nombre AS producto,
+        g.nombre AS gusto,
+        r.cantidad_repuesta AS cantidad
+      FROM reposiciones r
+      JOIN gustos g ON r.gusto_id = g.id
+      JOIN productos p ON g.producto_id = p.id
+      JOIN sucursales s ON r.sucursal_id = s.id
+      ORDER BY r.fecha DESC
+    `);
+
+    res.json(results);
+  } catch (error) {
+    console.error("❌ Error al obtener historial de reposiciones:", error);
+    res.status(500).json({ error: "Error al obtener historial de reposiciones" });
+  }
+});
+
+
+
 
 
 module.exports = router;
