@@ -441,7 +441,9 @@ router.get("/historial-reposiciones", async (req, res) => {
     res.json(results);
   } catch (error) {
     console.error("❌ Error al obtener historial de reposiciones:", error);
-    res.status(500).json({ error: "Error al obtener historial de reposiciones" });
+    res
+      .status(500)
+      .json({ error: "Error al obtener historial de reposiciones" });
   }
 });
 
@@ -474,8 +476,5 @@ router.post("/reposicion", async (req, res) => {
     res.status(500).json({ error: "Error al registrar la reposición" });
   }
 });
-
-
-
 
 module.exports = router;
