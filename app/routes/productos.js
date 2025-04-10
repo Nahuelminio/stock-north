@@ -424,8 +424,10 @@ router.get("/ventas-mensuales", async (req, res) => {
 // 📄 Historial de reposiciones
 router.get("/historial-reposiciones", async (req, res) => {
   try {
-    const [results] = await pool.promise().query(`
+   
+     const [results] = await pool.promise().query(`
       SELECT 
+        r.id,
         r.fecha,
         s.nombre AS sucursal,
         p.nombre AS producto,
