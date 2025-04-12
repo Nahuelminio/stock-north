@@ -362,8 +362,10 @@ router.get("/historial-ventas", async (req, res) => {
 });
 
 router.get("/historial-reposiciones", async (req, res) => {
+  const { producto, gusto, sucursal_id } = req.query;
+
   try {
-    const [results] = await pool.promise().query(`
+    let query = `
       SELECT 
         r.id,
         r.fecha,
@@ -375,8 +377,29 @@ router.get("/historial-reposiciones", async (req, res) => {
       JOIN gustos g ON r.gusto_id = g.id
       JOIN productos p ON g.producto_id = p.id
       JOIN sucursales s ON r.sucursal_id = s.id
-      ORDER BY r.fecha DESC
-    `);
+      WHERE 1 = 1
+    `;
+
+    const params = [];
+
+    if (sucursal_id) {
+      query += " AND s.id = ?";
+      params.push(sucursal_id);
+    }
+
+    if (producto) {
+      query += " AND p.nombre LIKE ?";
+      params.push(`%${producto}%`);
+    }
+
+    if (gusto) {
+      query += " AND g.nombre LIKE ?";
+      params.push(`%${gusto}%`);
+    }
+
+    query += " ORDER BY r.fecha DESC";
+
+    const [results] = await pool.promise().query(query, params);
     res.json(results);
   } catch (error) {
     console.error("❌ Error al obtener historial de reposiciones:", error);
