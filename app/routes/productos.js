@@ -238,7 +238,6 @@ router.get("/valor-stock-por-sucursal", async (req, res) => {
   }
 });
 
-
 // Reposición
 router.post("/reposicion", async (req, res) => {
   const { gusto_id, sucursal_id, cantidad } = req.body;
@@ -383,13 +382,14 @@ router.get("/historial-ventas", async (req, res) => {
   const { sucursal_id } = req.query;
   try {
     let query = `
-      SELECT 
-        v.id,
-        s.nombre AS sucursal,
-        p.nombre AS producto,
-        g.nombre AS gusto,
-        v.cantidad,
-        v.fecha
+     SELECT 
+     v.id,
+     s.nombre AS sucursal,
+     p.nombre AS producto,
+     g.nombre AS gusto,
+     v.cantidad,
+     p.precio, -- 👈 agregar esta línea
+     v.fecha
       FROM ventas v
       JOIN gustos g ON v.gusto_id = g.id
       JOIN productos p ON g.producto_id = p.id
