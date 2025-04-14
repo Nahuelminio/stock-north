@@ -397,10 +397,17 @@ router.get("/historial-reposiciones", async (req, res) => {
       params.push(`%${gusto}%`);
     }
 
-    if (fecha_inicio && fecha_fin) {
-      query += " AND DATE(r.fecha) BETWEEN ? AND ?";
-      params.push(fecha_inicio, fecha_fin);
-    }
+   if (fecha_inicio && fecha_fin) {
+     query += " AND DATE(r.fecha) BETWEEN ? AND ?";
+     params.push(fecha_inicio, fecha_fin);
+   } else if (fecha_inicio) {
+     query += " AND DATE(r.fecha) >= ?";
+     params.push(fecha_inicio);
+   } else if (fecha_fin) {
+     query += " AND DATE(r.fecha) <= ?";
+     params.push(fecha_fin);
+   }
+
 
     query += " ORDER BY r.fecha DESC";
 
