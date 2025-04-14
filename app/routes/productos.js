@@ -18,6 +18,7 @@ router.get("/", async (req, res) => {
       `SELECT 
         p.id AS producto_id,
         p.nombre AS producto_nombre,
+        p.precio,
         g.id AS gusto_id,
         g.nombre AS gusto,
         s.id AS sucursal_id,
@@ -37,8 +38,14 @@ router.get("/", async (req, res) => {
 
 // Agregar producto
 router.post("/agregar-producto", async (req, res) => {
-  const { nombre, gusto, sucursal_id, stock } = req.body;
-  if (!nombre || !gusto || !sucursal_id || stock === undefined) {
+  const { nombre, gusto, sucursal_id, stock, precio } = req.body;
+  if (
+    !nombre ||
+    !gusto ||
+    !sucursal_id ||
+    stock === undefined ||
+    precio === undefined
+  ) {
     return res.status(400).json({ error: "Faltan datos" });
   }
   try {
@@ -46,12 +53,25 @@ router.post("/agregar-producto", async (req, res) => {
       .promise()
       .query("SELECT id FROM productos WHERE nombre = ?", [nombre]);
 
-    const producto_id =
-      producto?.id ||
-      (await pool
+    let producto_id;
+
+    if (producto?.id) {
+      producto_id = producto.id;
+      await pool
         .promise()
-        .query("INSERT INTO productos (nombre) VALUES (?)", [nombre])
-        .then(([r]) => r.insertId));
+        .query("UPDATE productos SET precio = ? WHERE id = ?", [
+          precio,
+          producto_id,
+        ]);
+    } else {
+      const [insert] = await pool
+        .promise()
+        .query("INSERT INTO productos (nombre, precio) VALUES (?, ?)", [
+          nombre,
+          precio,
+        ]);
+      producto_id = insert.insertId;
+    }
 
     const [gustoInsert] = await pool
       .promise()
@@ -88,7 +108,7 @@ router.delete("/:gusto_id", async (req, res) => {
 
 // Editar gusto + stock
 router.post("/editar/:gusto_id", async (req, res) => {
-  const { stock, sucursal_id, nuevoGusto } = req.body;
+  const { stock, sucursal_id, nuevoGusto, precio, producto_id } = req.body;
   const { gusto_id } = req.params;
 
   try {
@@ -107,13 +127,21 @@ router.post("/editar/:gusto_id", async (req, res) => {
         [stock, gusto_id, sucursal_id]
       );
 
+    if (precio !== undefined && producto_id) {
+      await pool
+        .promise()
+        .query("UPDATE productos SET precio = ? WHERE id = ?", [
+          precio,
+          producto_id,
+        ]);
+    }
+
     res.json({ mensaje: "Producto actualizado correctamente" });
   } catch (error) {
     console.error("❌ Error al editar producto:", error);
     res.status(500).json({ error: "Error al editar producto" });
   }
 });
-
 /** ==========================
  * SUCURSALES
  * ========================== */
@@ -397,17 +425,16 @@ router.get("/historial-reposiciones", async (req, res) => {
       params.push(`%${gusto}%`);
     }
 
-   if (fecha_inicio && fecha_fin) {
-     query += " AND DATE(r.fecha) BETWEEN ? AND ?";
-     params.push(fecha_inicio, fecha_fin);
-   } else if (fecha_inicio) {
-     query += " AND DATE(r.fecha) >= ?";
-     params.push(fecha_inicio);
-   } else if (fecha_fin) {
-     query += " AND DATE(r.fecha) <= ?";
-     params.push(fecha_fin);
-   }
-
+    if (fecha_inicio && fecha_fin) {
+      query += " AND DATE(r.fecha) BETWEEN ? AND ?";
+      params.push(fecha_inicio, fecha_fin);
+    } else if (fecha_inicio) {
+      query += " AND DATE(r.fecha) >= ?";
+      params.push(fecha_inicio);
+    } else if (fecha_fin) {
+      query += " AND DATE(r.fecha) <= ?";
+      params.push(fecha_fin);
+    }
 
     query += " ORDER BY r.fecha DESC";
 
