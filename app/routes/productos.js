@@ -362,7 +362,7 @@ router.get("/historial-ventas", async (req, res) => {
 });
 
 router.get("/historial-reposiciones", async (req, res) => {
-  const { producto, gusto, sucursal_id } = req.query;
+  const { producto, gusto, sucursal_id, fecha_inicio, fecha_fin } = req.query;
 
   try {
     let query = `
@@ -397,6 +397,11 @@ router.get("/historial-reposiciones", async (req, res) => {
       params.push(`%${gusto}%`);
     }
 
+    if (fecha_inicio && fecha_fin) {
+      query += " AND DATE(r.fecha) BETWEEN ? AND ?";
+      params.push(fecha_inicio, fecha_fin);
+    }
+
     query += " ORDER BY r.fecha DESC";
 
     const [results] = await pool.promise().query(query, params);
@@ -408,6 +413,8 @@ router.get("/historial-reposiciones", async (req, res) => {
       .json({ error: "Error al obtener historial de reposiciones" });
   }
 });
+
+module.exports = router;
 
 /** ==========================
  * UTILIDAD: Disponibles
