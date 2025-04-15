@@ -540,4 +540,53 @@ router.get("/pagos-por-sucursal", async (req, res) => {
   }
 });
 
+router.get("/resumen-pagos", async (req, res) => {
+  try {
+    const [result] = await pool.promise().query(`
+      SELECT 
+        s.id AS sucursal_id,
+        s.nombre AS sucursal,
+        COALESCE(SUM(pv.total_facturado), 0) AS total_facturado,
+        COALESCE(SUM(pg.monto), 0) AS total_pagado
+      FROM sucursales s
+      LEFT JOIN (
+        SELECT 
+          v.sucursal_id, 
+          SUM(v.cantidad * p.precio) AS total_facturado
+        FROM ventas v
+        JOIN gustos g ON v.gusto_id = g.id
+        JOIN productos p ON g.producto_id = p.id
+        GROUP BY v.sucursal_id
+      ) pv ON pv.sucursal_id = s.id
+      LEFT JOIN pagos pg ON pg.sucursal_id = s.id
+      GROUP BY s.id, s.nombre
+    `);
+    res.json(result);
+  } catch (error) {
+    console.error("❌ Error al obtener resumen financiero:", error);
+    res.status(500).json({ error: "Error al obtener resumen financiero" });
+  }
+});
+router.post("/registrar-pago", async (req, res) => {
+  const { sucursal_id, metodo, monto } = req.body;
+
+  if (!sucursal_id || !metodo || !monto) {
+    return res.status(400).json({ error: "Faltan datos del pago" });
+  }
+
+  try {
+    await pool
+      .promise()
+      .query(
+        "INSERT INTO pagos (sucursal_id, metodo, monto, fecha) VALUES (?, ?, ?, NOW())",
+        [sucursal_id, metodo, monto]
+      );
+    res.json({ mensaje: "✅ Pago registrado" });
+  } catch (error) {
+    console.error("❌ Error al registrar pago:", error);
+    res.status(500).json({ error: "Error al registrar el pago" });
+  }
+});
+
+
 module.exports = router;
