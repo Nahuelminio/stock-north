@@ -610,5 +610,25 @@ router.post("/registrar-pago", async (req, res) => {
     res.status(500).json({ error: "Error al registrar el pago" });
   }
 });
+router.get("/historial-pagos", async (req, res) => {
+  try {
+    const [result] = await pool.promise().query(`
+      SELECT 
+        p.id,
+        s.nombre AS sucursal,
+        p.metodo AS metodo_pago,
+        p.monto,
+        p.fecha
+      FROM pagos p
+      JOIN sucursales s ON p.sucursal_id = s.id
+      ORDER BY p.fecha DESC
+    `);
+    res.json(result);
+  } catch (error) {
+    console.error("❌ Error al obtener historial de pagos:", error);
+    res.status(500).json({ error: "Error al obtener historial de pagos" });
+  }
+});
+
 
 module.exports = router;
