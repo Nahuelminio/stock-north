@@ -504,5 +504,40 @@ router.get("/disponibles", async (req, res) => {
     res.status(500).json({ error: "Error al obtener productos disponibles" });
   }
 });
+// POST /productos/pagos
+router.post("/pagos", async (req, res) => {
+  const { sucursal_id, metodo_pago, monto } = req.body;
+  if (!sucursal_id || !metodo_pago || !monto) {
+    return res.status(400).json({ error: "Faltan datos" });
+  }
+  try {
+    await pool
+      .promise()
+      .query("INSERT INTO pagos (sucursal_id, metodo_pago, monto) VALUES (?, ?, ?)", [sucursal_id, metodo_pago, monto]);
+    res.json({ mensaje: "Pago registrado ✅" });
+  } catch (err) {
+    console.error("❌ Error al registrar pago:", err);
+    res.status(500).json({ error: "Error al registrar pago" });
+  }
+});
+
+// GET /productos/pagos-por-sucursal
+router.get("/pagos-por-sucursal", async (req, res) => {
+  try {
+    const [result] = await pool.promise().query(`
+      SELECT 
+        s.id AS sucursal_id,
+        s.nombre AS sucursal,
+        IFNULL(SUM(p.monto), 0) AS total_pagado
+      FROM sucursales s
+      LEFT JOIN pagos p ON p.sucursal_id = s.id
+      GROUP BY s.id, s.nombre
+    `);
+    res.json(result);
+  } catch (err) {
+    console.error("❌ Error al obtener pagos por sucursal:", err);
+    res.status(500).json({ error: "Error al obtener pagos" });
+  }
+});
 
 module.exports = router;
