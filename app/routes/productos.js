@@ -513,7 +513,10 @@ router.post("/pagos", async (req, res) => {
   try {
     await pool
       .promise()
-      .query("INSERT INTO pagos (sucursal_id, metodo_pago, monto) VALUES (?, ?, ?)", [sucursal_id, metodo_pago, monto]);
+      .query(
+        "INSERT INTO pagos (sucursal_id, metodo_pago, monto) VALUES (?, ?, ?)",
+        [sucursal_id, metodo_pago, monto]
+      );
     res.json({ mensaje: "Pago registrado ✅" });
   } catch (err) {
     console.error("❌ Error al registrar pago:", err);
@@ -569,6 +572,7 @@ router.get("/resumen-pagos", async (req, res) => {
 });
 router.post("/registrar-pago", async (req, res) => {
   const { sucursal_id, metodo, monto } = req.body;
+console.log("📥 Pago recibido:", req.body);
 
   if (!sucursal_id || !metodo || !monto) {
     return res.status(400).json({ error: "Faltan datos del pago" });
@@ -587,6 +591,5 @@ router.post("/registrar-pago", async (req, res) => {
     res.status(500).json({ error: "Error al registrar el pago" });
   }
 });
-
 
 module.exports = router;
