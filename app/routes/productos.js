@@ -435,6 +435,27 @@ router.get("/historial-ventas", async (req, res) => {
     res.status(500).json({ error: "Error al obtener historial de ventas" });
   }
 });
+router.get("/total-ventas-por-sucursal", async (req, res) => {
+  try {
+    const [results] = await pool.promise().query(`
+      SELECT 
+        s.id AS sucursal_id,
+        s.nombre AS sucursal,
+        SUM(v.cantidad * p.precio) AS total_facturado
+      FROM ventas v
+      JOIN gustos g ON v.gusto_id = g.id
+      JOIN productos p ON g.producto_id = p.id
+      JOIN sucursales s ON v.sucursal_id = s.id
+      GROUP BY s.id, s.nombre
+    `);
+
+    res.json(results);
+  } catch (error) {
+    console.error("❌ Error al obtener total de ventas por sucursal:", error);
+    res.status(500).json({ error: "Error al obtener total de ventas" });
+  }
+});
+
 
 router.get("/historial-reposiciones", async (req, res) => {
   const { producto, gusto, sucursal_id, fecha_inicio, fecha_fin } = req.query;
