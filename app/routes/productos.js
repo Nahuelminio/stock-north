@@ -542,37 +542,56 @@ router.get("/pagos-por-sucursal", async (req, res) => {
     res.status(500).json({ error: "Error al obtener pagos" });
   }
 });
-
 router.get("/resumen-pagos", async (req, res) => {
   try {
-    const [result] = await pool.promise().query(`
+    const [facturadoPorSucursal] = await pool.promise().query(`
       SELECT 
-        s.id AS sucursal_id,
+        v.sucursal_id, 
         s.nombre AS sucursal,
-        COALESCE(SUM(pv.total_facturado), 0) AS total_facturado,
-        COALESCE(SUM(pg.monto), 0) AS total_pagado
-      FROM sucursales s
-      LEFT JOIN (
-        SELECT 
-          v.sucursal_id, 
-          SUM(v.cantidad * p.precio) AS total_facturado
-        FROM ventas v
-        JOIN gustos g ON v.gusto_id = g.id
-        JOIN productos p ON g.producto_id = p.id
-        GROUP BY v.sucursal_id
-      ) pv ON pv.sucursal_id = s.id
-      LEFT JOIN pagos pg ON pg.sucursal_id = s.id
-      GROUP BY s.id, s.nombre
+        SUM(v.cantidad * p.precio) AS total_facturado
+      FROM ventas v
+      JOIN gustos g ON v.gusto_id = g.id
+      JOIN productos p ON g.producto_id = p.id
+      JOIN sucursales s ON v.sucursal_id = s.id
+      GROUP BY v.sucursal_id, s.nombre
     `);
-    res.json(result);
+
+    const [pagosPorSucursal] = await pool.promise().query(`
+      SELECT 
+        sucursal_id,
+        SUM(monto) AS total_pagado
+      FROM pagos
+      GROUP BY sucursal_id
+    `);
+
+    // Lista de sucursales unificada
+    const todasLasSucursales = new Set([
+      ...facturadoPorSucursal.map((f) => f.sucursal_id),
+      ...pagosPorSucursal.map((p) => p.sucursal_id),
+    ]);
+
+    const resumen = Array.from(todasLasSucursales).map((id) => {
+      const f = facturadoPorSucursal.find((x) => x.sucursal_id === id) || {};
+      const p = pagosPorSucursal.find((x) => x.sucursal_id === id) || {};
+      return {
+        sucursal_id: id,
+        sucursal: f.sucursal || p.sucursal || "Desconocida",
+        total_facturado: f.total_facturado || 0,
+        total_pagado: p.total_pagado || 0,
+      };
+    });
+
+    res.json(resumen);
   } catch (error) {
     console.error("❌ Error al obtener resumen financiero:", error);
     res.status(500).json({ error: "Error al obtener resumen financiero" });
   }
 });
+
+
 router.post("/registrar-pago", async (req, res) => {
   const { sucursal_id, metodo, monto } = req.body;
-console.log("📥 Pago recibido:", req.body);
+  console.log("📥 Pago recibido:", req.body);
 
   if (!sucursal_id || !metodo || !monto) {
     return res.status(400).json({ error: "Faltan datos del pago" });
