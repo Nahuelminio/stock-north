@@ -337,14 +337,38 @@ router.get("/dashboard", async (req, res) => {
     res.status(500).json({ error: "Error al obtener dashboard" });
   }
 });
+router.get("/ventas-total-por-sucursal", async (req, res) => {
+  try {
+    const [result] = await pool.promise().query(`
+      SELECT 
+        s.id AS sucursal_id,
+        s.nombre AS sucursal,
+        SUM(v.cantidad * p.precio) AS total_ventas
+      FROM ventas v
+      JOIN gustos g ON v.gusto_id = g.id
+      JOIN productos p ON g.producto_id = p.id
+      JOIN sucursales s ON v.sucursal_id = s.id
+      GROUP BY s.id, s.nombre
+    `);
+
+    res.json(result);
+  } catch (error) {
+    console.error("❌ Error al obtener ventas por sucursal:", error);
+    res.status(500).json({ error: "Error al obtener ventas por sucursal" });
+  }
+});
 
 router.get("/ventas-por-sucursal", async (req, res) => {
   try {
     const [ventas] = await pool.promise().query(`
-      SELECT s.nombre AS sucursal, SUM(v.cantidad) AS total_ventas
+      SELECT 
+        s.nombre AS sucursal, 
+        SUM(v.cantidad * p.precio) AS total_facturado
       FROM ventas v
+      JOIN gustos g ON v.gusto_id = g.id
+      JOIN productos p ON g.producto_id = p.id
       JOIN sucursales s ON v.sucursal_id = s.id
-      GROUP BY v.sucursal_id
+      GROUP BY v.sucursal_id, s.nombre
     `);
     res.json(ventas);
   } catch (err) {
@@ -352,6 +376,7 @@ router.get("/ventas-por-sucursal", async (req, res) => {
     res.status(500).json({ error: "Error al obtener ventas" });
   }
 });
+
 
 router.get("/ventas-mensuales", async (req, res) => {
   const { mes, anio } = req.query;
@@ -611,24 +636,50 @@ router.post("/registrar-pago", async (req, res) => {
   }
 });
 router.get("/historial-pagos", async (req, res) => {
+  const { sucursal_id, fecha_inicio, fecha_fin } = req.query;
+
   try {
-    const [result] = await pool.promise().query(`
+    let query = `
       SELECT 
         p.id,
         s.nombre AS sucursal,
-        p.metodo AS metodo_pago,
+        p.metodo,
         p.monto,
         p.fecha
       FROM pagos p
       JOIN sucursales s ON p.sucursal_id = s.id
-      ORDER BY p.fecha DESC
-    `);
-    res.json(result);
+      WHERE 1 = 1
+    `;
+
+    const params = [];
+
+    if (sucursal_id) {
+      query += " AND p.sucursal_id = ?";
+      params.push(sucursal_id);
+    }
+
+    if (fecha_inicio && fecha_fin) {
+      query += " AND DATE(p.fecha) BETWEEN ? AND ?";
+      params.push(fecha_inicio, fecha_fin);
+    } else if (fecha_inicio) {
+      query += " AND DATE(p.fecha) >= ?";
+      params.push(fecha_inicio);
+    } else if (fecha_fin) {
+      query += " AND DATE(p.fecha) <= ?";
+      params.push(fecha_fin);
+    }
+
+    query += " ORDER BY p.fecha DESC";
+
+    const [results] = await pool.promise().query(query, params);
+    res.json(results);
   } catch (error) {
     console.error("❌ Error al obtener historial de pagos:", error);
     res.status(500).json({ error: "Error al obtener historial de pagos" });
   }
 });
+
+
 
 
 module.exports = router;
