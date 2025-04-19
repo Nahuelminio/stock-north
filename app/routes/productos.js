@@ -38,7 +38,7 @@ router.get("/", async (req, res) => {
 
 // Agregar producto
 router.post("/agregar-producto", async (req, res) => {
-  const { nombre, gusto, sucursal_id, stock, precio } = req.body;
+  const { nombre, gusto, sucursal_id, stock, precio, codigo_barra } = req.body;
   if (
     !nombre ||
     !gusto ||
@@ -59,16 +59,18 @@ router.post("/agregar-producto", async (req, res) => {
       producto_id = producto.id;
       await pool
         .promise()
-        .query("UPDATE productos SET precio = ? WHERE id = ?", [
+        .query("UPDATE productos SET precio = ?, codigo_barra = ? WHERE id = ?", [
           precio,
+          codigo_barra || null,
           producto_id,
         ]);
     } else {
       const [insert] = await pool
         .promise()
-        .query("INSERT INTO productos (nombre, precio) VALUES (?, ?)", [
+        .query("INSERT INTO productos (nombre, precio, codigo_barra) VALUES (?, ?, ?)", [
           nombre,
           precio,
+          codigo_barra || null,
         ]);
       producto_id = insert.insertId;
     }
@@ -108,7 +110,7 @@ router.delete("/:gusto_id", async (req, res) => {
 
 // Editar gusto + stock
 router.post("/editar/:gusto_id", async (req, res) => {
-  const { stock, sucursal_id, nuevoGusto, precio, producto_id } = req.body;
+  const { stock, sucursal_id, nuevoGusto, precio, producto_id, codigo_barra } = req.body;
   const { gusto_id } = req.params;
 
   try {
@@ -130,8 +132,9 @@ router.post("/editar/:gusto_id", async (req, res) => {
     if (precio !== undefined && producto_id) {
       await pool
         .promise()
-        .query("UPDATE productos SET precio = ? WHERE id = ?", [
+        .query("UPDATE productos SET precio = ?, codigo_barra = ? WHERE id = ?", [
           precio,
+          codigo_barra || null,
           producto_id,
         ]);
     }
