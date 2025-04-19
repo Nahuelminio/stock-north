@@ -722,5 +722,144 @@ router.get("/historial-pagos", async (req, res) => {
 
 
 
+/** ==========================
+ * Código de Barras
+ * ========================== */
+
+// Buscar producto por código de barras
+router.get("/buscar-por-codigo/:codigo", async (req, res) => {
+  const { codigo } = req.params;
+  try {
+    const [result] = await pool.promise().query(
+      `SELECT 
+        p.id AS producto_id,
+        p.nombre AS producto_nombre,
+        p.codigo_barra,
+        p.precio,
+        g.id AS gusto_id,
+        g.nombre AS gusto
+      FROM productos p
+      JOIN gustos g ON g.producto_id = p.id
+      WHERE p.codigo_barra = ?
+      LIMIT 1`,
+      [codigo]
+    );
+
+    if (result.length === 0) {
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+
+    res.json(result[0]);
+  } catch (error) {
+    console.error("❌ Error al buscar producto por código:", error);
+    res.status(500).json({ error: "Error al buscar producto por código" });
+  }
+});
+
+// Registrar venta escaneando código
+router.post("/vender-por-codigo", async (req, res) => {
+  const { codigo_barra, sucursal_id, cantidad } = req.body;
+
+  if (!codigo_barra || !sucursal_id || !cantidad) {
+    return res.status(400).json({ error: "Faltan datos" });
+  }
+
+  try {
+    const [[producto]] = await pool.promise().query(
+      `SELECT g.id AS gusto_id 
+       FROM productos p 
+       JOIN gustos g ON g.producto_id = p.id 
+       WHERE p.codigo_barra = ? 
+       LIMIT 1`,
+      [codigo_barra]
+    );
+
+    if (!producto) {
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+
+    const gusto_id = producto.gusto_id;
+
+    const [[stock]] = await pool.promise().query(
+      `SELECT cantidad FROM stock WHERE gusto_id = ? AND sucursal_id = ?`,
+      [gusto_id, sucursal_id]
+    );
+
+    if (!stock || stock.cantidad < cantidad) {
+      return res
+        .status(400)
+        .json({ error: "Stock insuficiente o producto no disponible" });
+    }
+
+    await pool.promise().query(
+      `UPDATE stock SET cantidad = cantidad - ? WHERE gusto_id = ? AND sucursal_id = ?`,
+      [cantidad, gusto_id, sucursal_id]
+    );
+
+    await pool.promise().query(
+      `INSERT INTO ventas (gusto_id, sucursal_id, cantidad) VALUES (?, ?, ?)`,
+      [gusto_id, sucursal_id, cantidad]
+    );
+
+    res.json({ mensaje: "Venta registrada por código ✅" });
+  } catch (error) {
+    console.error("❌ Error al registrar venta por código:", error);
+    res.status(500).json({ error: "Error al registrar venta" });
+  }
+});
+
+// Registrar reposición escaneando código
+router.post("/reposicion-por-codigo", async (req, res) => {
+  const { codigo_barra, sucursal_id, cantidad } = req.body;
+
+  if (!codigo_barra || !sucursal_id || !cantidad) {
+    return res.status(400).json({ error: "Faltan datos" });
+  }
+
+  try {
+    const [[producto]] = await pool.promise().query(
+      `SELECT g.id AS gusto_id 
+       FROM productos p 
+       JOIN gustos g ON g.producto_id = p.id 
+       WHERE p.codigo_barra = ? 
+       LIMIT 1`,
+      [codigo_barra]
+    );
+
+    if (!producto) {
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+
+    const gusto_id = producto.gusto_id;
+
+    const [[stock]] = await pool.promise().query(
+      `SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?`,
+      [gusto_id, sucursal_id]
+    );
+
+    if (!stock) {
+      // Si no hay stock, insertar
+      await pool.promise().query(
+        `INSERT INTO stock (gusto_id, sucursal_id, cantidad) VALUES (?, ?, ?)`,
+        [gusto_id, sucursal_id, cantidad]
+      );
+    } else {
+      await pool.promise().query(
+        `UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?`,
+        [cantidad, gusto_id, sucursal_id]
+      );
+    }
+
+    await pool.promise().query(
+      `INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, fecha) VALUES (?, ?, ?, NOW())`,
+      [gusto_id, sucursal_id, cantidad]
+    );
+
+    res.json({ mensaje: "Reposición registrada por código ✅" });
+  } catch (error) {
+    console.error("❌ Error al registrar reposición por código:", error);
+    res.status(500).json({ error: "Error al registrar reposición" });
+  }
+});
 
 module.exports = router;
