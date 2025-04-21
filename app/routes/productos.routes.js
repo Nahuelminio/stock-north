@@ -180,6 +180,37 @@ router.delete("/eliminar-gusto/:gusto_id", async (req, res) => {
     res.status(500).json({ error: "No se pudo eliminar el gusto" });
   }
 });
+// Buscar producto por código de barra
+router.get("/buscar-por-codigo/:codigo_barra", async (req, res) => {
+  const { codigo_barra } = req.params;
+
+  try {
+    const [result] = await pool.promise().query(
+      `SELECT 
+        p.id AS producto_id,
+        p.nombre AS producto,
+        g.id AS gusto_id,
+        g.nombre AS gusto,
+        g.codigo_barra,
+        p.precio
+      FROM gustos g
+      JOIN productos p ON g.producto_id = p.id
+      WHERE g.codigo_barra = ?
+      LIMIT 1
+      `,
+      [codigo_barra]
+    );
+
+    if (result.length === 0) {
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+
+    res.json(result[0]);
+  } catch (error) {
+    console.error("❌ Error al buscar por código de barra:", error);
+    res.status(500).json({ error: "Error al buscar producto" });
+  }
+});
 
 
 module.exports = router;
