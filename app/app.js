@@ -10,6 +10,8 @@ app.use(express.urlencoded({ extended: true }));
 // Montaje directo sin prefijo para que coincidan las rutas esperadas por el frontend
 app.use("/", require("./routes/productos.routes"));
 app.use("/", require("./routes/dashboard.routes"));
+app.use("/", require("./routes/stock.routes"));
+
 app.use("/", require("./routes/ventas.routes"));
 app.use("/", require("./routes/reposiciones.routes"));
 app.use("/", require("./routes/pagos.routes"));
