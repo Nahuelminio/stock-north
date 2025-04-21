@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 
+
 // Obtener todos los productos
 router.get("/", async (req, res) => {
   try {
