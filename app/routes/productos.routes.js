@@ -2,7 +2,6 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 
-
 // Obtener todos los productos
 router.get("/", async (req, res) => {
   try {
@@ -29,7 +28,7 @@ router.get("/", async (req, res) => {
   }
 });
 
-// Agregar un nuevo producto
+// Agregar un nuevo producto con validación de código
 router.post("/agregar", async (req, res) => {
   const { nombre, gusto, sucursal_id, stock, precio, codigo_barra } = req.body;
   if (
@@ -43,6 +42,21 @@ router.post("/agregar", async (req, res) => {
   }
 
   try {
+    // Validar código duplicado
+    if (codigo_barra) {
+      const [existe] = await pool.promise().query(
+        `SELECT g.id FROM gustos g
+         JOIN stock st ON st.gusto_id = g.id
+         WHERE g.codigo_barra = ? AND st.sucursal_id = ?`,
+        [codigo_barra, sucursal_id]
+      );
+      if (existe.length > 0) {
+        return res
+          .status(400)
+          .json({ error: "Este código de barras ya existe en esta sucursal" });
+      }
+    }
+
     const [[producto]] = await pool
       .promise()
       .query("SELECT id FROM productos WHERE nombre = ?", [nombre]);
@@ -88,13 +102,28 @@ router.post("/agregar", async (req, res) => {
   }
 });
 
-// Editar producto (gusto + precio + stock)
+// Editar producto con validación
 router.post("/editar/:gusto_id", async (req, res) => {
   const { stock, sucursal_id, nuevoGusto, precio, producto_id, codigo_barra } =
     req.body;
   const { gusto_id } = req.params;
 
   try {
+    // Validar código duplicado (excluyendo el gusto actual)
+    if (codigo_barra) {
+      const [existe] = await pool.promise().query(
+        `SELECT g.id FROM gustos g
+         JOIN stock st ON st.gusto_id = g.id
+         WHERE g.codigo_barra = ? AND st.sucursal_id = ? AND g.id != ?`,
+        [codigo_barra, sucursal_id, gusto_id]
+      );
+      if (existe.length > 0) {
+        return res
+          .status(400)
+          .json({ error: "Este código de barras ya existe en esta sucursal" });
+      }
+    }
+
     if (nuevoGusto || codigo_barra) {
       await pool
         .promise()
@@ -127,6 +156,7 @@ router.post("/editar/:gusto_id", async (req, res) => {
     res.status(500).json({ error: "Error al editar producto" });
   }
 });
+
 // Obtener productos disponibles por sucursal
 router.get("/disponibles", async (req, res) => {
   const { sucursal_id } = req.query;
@@ -137,8 +167,7 @@ router.get("/disponibles", async (req, res) => {
 
   try {
     const [results] = await pool.promise().query(
-      `
-      SELECT 
+      `SELECT 
         p.id AS producto_id,
         p.nombre AS producto_nombre,
         g.id AS gusto_id,
@@ -148,8 +177,7 @@ router.get("/disponibles", async (req, res) => {
       FROM productos p
       JOIN gustos g ON g.producto_id = p.id
       JOIN stock st ON st.gusto_id = g.id
-      WHERE st.sucursal_id = ?
-      `,
+      WHERE st.sucursal_id = ?`,
       [sucursal_id]
     );
     res.json(results);
@@ -164,15 +192,10 @@ router.delete("/eliminar-gusto/:gusto_id", async (req, res) => {
   const { gusto_id } = req.params;
 
   try {
-    // Eliminar stock del gusto
     await pool
       .promise()
       .query("DELETE FROM stock WHERE gusto_id = ?", [gusto_id]);
-
-    // Eliminar el gusto
-    await pool
-      .promise()
-      .query("DELETE FROM gustos WHERE id = ?", [gusto_id]);
+    await pool.promise().query("DELETE FROM gustos WHERE id = ?", [gusto_id]);
 
     res.json({ mensaje: "Gusto eliminado correctamente" });
   } catch (error) {
@@ -180,6 +203,7 @@ router.delete("/eliminar-gusto/:gusto_id", async (req, res) => {
     res.status(500).json({ error: "No se pudo eliminar el gusto" });
   }
 });
+
 // Buscar producto por código de barra
 router.get("/buscar-por-codigo/:codigo_barra", async (req, res) => {
   const { codigo_barra } = req.params;
@@ -196,8 +220,7 @@ router.get("/buscar-por-codigo/:codigo_barra", async (req, res) => {
       FROM gustos g
       JOIN productos p ON g.producto_id = p.id
       WHERE g.codigo_barra = ?
-      LIMIT 1
-      `,
+      LIMIT 1`,
       [codigo_barra]
     );
 
@@ -211,6 +234,5 @@ router.get("/buscar-por-codigo/:codigo_barra", async (req, res) => {
     res.status(500).json({ error: "Error al buscar producto" });
   }
 });
-
 
 module.exports = router;
