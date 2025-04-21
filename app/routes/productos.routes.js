@@ -159,5 +159,40 @@ router.get("/disponibles", async (req, res) => {
   }
 });
 
+// Eliminar producto completo (gustos + stock + producto)
+router.delete("/eliminar/:producto_id", async (req, res) => {
+  const { producto_id } = req.params;
+
+  try {
+    // Obtener los gustos del producto
+    const [gustos] = await pool
+      .promise()
+      .query("SELECT id FROM gustos WHERE producto_id = ?", [producto_id]);
+
+    const gustoIds = gustos.map((g) => g.id);
+
+    if (gustoIds.length > 0) {
+      // Eliminar stock de cada gusto
+      await pool
+        .promise()
+        .query("DELETE FROM stock WHERE gusto_id IN (?)", [gustoIds]);
+
+      // Eliminar gustos
+      await pool
+        .promise()
+        .query("DELETE FROM gustos WHERE id IN (?)", [gustoIds]);
+    }
+
+    // Eliminar producto
+    await pool
+      .promise()
+      .query("DELETE FROM productos WHERE id = ?", [producto_id]);
+
+    res.json({ mensaje: "Producto eliminado correctamente" });
+  } catch (error) {
+    console.error("❌ Error al eliminar producto:", error);
+    res.status(500).json({ error: "No se pudo eliminar el producto" });
+  }
+});
 
 module.exports = router;
