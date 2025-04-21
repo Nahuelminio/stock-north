@@ -127,5 +127,37 @@ router.post("/editar/:gusto_id", async (req, res) => {
     res.status(500).json({ error: "Error al editar producto" });
   }
 });
+// Obtener productos disponibles por sucursal
+router.get("/disponibles", async (req, res) => {
+  const { sucursal_id } = req.query;
+
+  if (!sucursal_id) {
+    return res.status(400).json({ error: "Falta el parámetro sucursal_id" });
+  }
+
+  try {
+    const [results] = await pool.promise().query(
+      `
+      SELECT 
+        p.id AS producto_id,
+        p.nombre AS producto_nombre,
+        g.id AS gusto_id,
+        g.nombre AS gusto,
+        g.codigo_barra,
+        st.cantidad AS stock
+      FROM productos p
+      JOIN gustos g ON g.producto_id = p.id
+      JOIN stock st ON st.gusto_id = g.id
+      WHERE st.sucursal_id = ?
+      `,
+      [sucursal_id]
+    );
+    res.json(results);
+  } catch (error) {
+    console.error("❌ Error al obtener productos disponibles:", error);
+    res.status(500).json({ error: "Error al obtener productos disponibles" });
+  }
+});
+
 
 module.exports = router;
