@@ -1,9 +1,8 @@
-// routes/sucursales.routes.js
 const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 
-// Obtener todas las sucursales
+// GET /sucursales
 router.get("/", async (req, res) => {
   try {
     const [results] = await pool.promise().query("SELECT * FROM sucursales");
@@ -14,7 +13,7 @@ router.get("/", async (req, res) => {
   }
 });
 
-// Crear nueva sucursal
+// POST /sucursales
 router.post("/", async (req, res) => {
   const { nombre } = req.body;
   if (!nombre) {
