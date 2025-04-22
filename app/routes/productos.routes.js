@@ -28,21 +28,34 @@ router.get("/", async (req, res) => {
   }
 });
 
+// Verificar código duplicado por sucursal
+router.get("/verificar-codigo", async (req, res) => {
+  const { codigo_barra, sucursal_id, gusto_id } = req.query;
+
+  try {
+    const [result] = await pool.promise().query(
+      `SELECT g.id FROM gustos g
+       JOIN stock st ON st.gusto_id = g.id
+       WHERE g.codigo_barra = ? AND st.sucursal_id = ?
+       ${gusto_id ? "AND g.id != ?" : ""}`,
+      gusto_id ? [codigo_barra, sucursal_id, gusto_id] : [codigo_barra, sucursal_id]
+    );
+
+    res.json({ existe: result.length > 0 });
+  } catch (error) {
+    console.error("❌ Error al verificar código:", error);
+    res.status(500).json({ error: "Error al verificar código" });
+  }
+});
+
 // Agregar un nuevo producto con validación de código
 router.post("/agregar", async (req, res) => {
   const { nombre, gusto, sucursal_id, stock, precio, codigo_barra } = req.body;
-  if (
-    !nombre ||
-    !gusto ||
-    !sucursal_id ||
-    stock === undefined ||
-    precio === undefined
-  ) {
+  if (!nombre || !gusto || !sucursal_id || stock === undefined || precio === undefined) {
     return res.status(400).json({ error: "Faltan datos" });
   }
 
   try {
-    // Validar código duplicado
     if (codigo_barra) {
       const [existe] = await pool.promise().query(
         `SELECT g.id FROM gustos g
@@ -51,9 +64,7 @@ router.post("/agregar", async (req, res) => {
         [codigo_barra, sucursal_id]
       );
       if (existe.length > 0) {
-        return res
-          .status(400)
-          .json({ error: "Este código de barras ya existe en esta sucursal" });
+        return res.status(400).json({ error: "Este código de barras ya existe en esta sucursal" });
       }
     }
 
@@ -67,33 +78,29 @@ router.post("/agregar", async (req, res) => {
       producto_id = producto.id;
       await pool
         .promise()
-        .query("UPDATE productos SET precio = ? WHERE id = ?", [
-          precio,
-          producto_id,
-        ]);
+        .query("UPDATE productos SET precio = ? WHERE id = ?", [precio, producto_id]);
     } else {
       const [insert] = await pool
         .promise()
-        .query("INSERT INTO productos (nombre, precio) VALUES (?, ?)", [
-          nombre,
-          precio,
-        ]);
+        .query("INSERT INTO productos (nombre, precio) VALUES (?, ?)", [nombre, precio]);
       producto_id = insert.insertId;
     }
 
     const [gustoInsert] = await pool
       .promise()
-      .query(
-        "INSERT INTO gustos (producto_id, nombre, codigo_barra) VALUES (?, ?, ?)",
-        [producto_id, gusto, codigo_barra || null]
-      );
+      .query("INSERT INTO gustos (producto_id, nombre, codigo_barra) VALUES (?, ?, ?)", [
+        producto_id,
+        gusto,
+        codigo_barra || null,
+      ]);
 
     await pool
       .promise()
-      .query(
-        "INSERT INTO stock (gusto_id, sucursal_id, cantidad) VALUES (?, ?, ?)",
-        [gustoInsert.insertId, sucursal_id, stock]
-      );
+      .query("INSERT INTO stock (gusto_id, sucursal_id, cantidad) VALUES (?, ?, ?)", [
+        gustoInsert.insertId,
+        sucursal_id,
+        stock,
+      ]);
 
     res.status(200).json({ mensaje: "Producto agregado correctamente" });
   } catch (error) {
@@ -104,12 +111,10 @@ router.post("/agregar", async (req, res) => {
 
 // Editar producto con validación
 router.post("/editar/:gusto_id", async (req, res) => {
-  const { stock, sucursal_id, nuevoGusto, precio, producto_id, codigo_barra } =
-    req.body;
+  const { stock, sucursal_id, nuevoGusto, precio, producto_id, codigo_barra } = req.body;
   const { gusto_id } = req.params;
 
   try {
-    // Validar código duplicado (excluyendo el gusto actual)
     if (codigo_barra) {
       const [existe] = await pool.promise().query(
         `SELECT g.id FROM gustos g
@@ -118,9 +123,7 @@ router.post("/editar/:gusto_id", async (req, res) => {
         [codigo_barra, sucursal_id, gusto_id]
       );
       if (existe.length > 0) {
-        return res
-          .status(400)
-          .json({ error: "Este código de barras ya existe en esta sucursal" });
+        return res.status(400).json({ error: "Este código de barras ya existe en esta sucursal" });
       }
     }
 
@@ -136,18 +139,16 @@ router.post("/editar/:gusto_id", async (req, res) => {
 
     await pool
       .promise()
-      .query(
-        "UPDATE stock SET cantidad = ? WHERE gusto_id = ? AND sucursal_id = ?",
-        [stock, gusto_id, sucursal_id]
-      );
+      .query("UPDATE stock SET cantidad = ? WHERE gusto_id = ? AND sucursal_id = ?", [
+        stock,
+        gusto_id,
+        sucursal_id,
+      ]);
 
     if (precio !== undefined && producto_id) {
       await pool
         .promise()
-        .query("UPDATE productos SET precio = ? WHERE id = ?", [
-          precio,
-          producto_id,
-        ]);
+        .query("UPDATE productos SET precio = ? WHERE id = ?", [precio, producto_id]);
     }
 
     res.json({ mensaje: "Producto actualizado correctamente" });
@@ -192,9 +193,7 @@ router.delete("/eliminar-gusto/:gusto_id", async (req, res) => {
   const { gusto_id } = req.params;
 
   try {
-    await pool
-      .promise()
-      .query("DELETE FROM stock WHERE gusto_id = ?", [gusto_id]);
+    await pool.promise().query("DELETE FROM stock WHERE gusto_id = ?", [gusto_id]);
     await pool.promise().query("DELETE FROM gustos WHERE id = ?", [gusto_id]);
 
     res.json({ mensaje: "Gusto eliminado correctamente" });
