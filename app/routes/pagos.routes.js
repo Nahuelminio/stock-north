@@ -1,11 +1,14 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../db");
+const authenticate = require("../middlewares/authenticate");
 
-// Registrar pago
-router.post("/registrar-pago", async (req, res) => {
-  const { sucursal_id, metodo, monto } = req.body;
-  if (!sucursal_id || !metodo || !monto) {
+// 🔵 Registrar pago (solo para la sucursal logueada)
+router.post("/registrar-pago", authenticate, async (req, res) => {
+  const { metodo, monto } = req.body;
+  const { sucursalId } = req.user;
+
+  if (!metodo || !monto) {
     return res.status(400).json({ error: "Faltan datos del pago" });
   }
 
@@ -14,7 +17,7 @@ router.post("/registrar-pago", async (req, res) => {
       .promise()
       .query(
         "INSERT INTO pagos (sucursal_id, metodo, monto, fecha) VALUES (?, ?, ?, NOW())",
-        [sucursal_id, metodo, monto]
+        [sucursalId, metodo, monto]
       );
     res.json({ mensaje: "✅ Pago registrado" });
   } catch (error) {
@@ -23,9 +26,10 @@ router.post("/registrar-pago", async (req, res) => {
   }
 });
 
-// Historial de pagos
-router.get("/historial-pagos", async (req, res) => {
-  const { sucursal_id, fecha_inicio, fecha_fin } = req.query;
+// 🔵 Historial de pagos
+router.get("/historial-pagos", authenticate, async (req, res) => {
+  const { fecha_inicio, fecha_fin } = req.query;
+  const { sucursalId, rol } = req.user;
 
   try {
     let query = `
@@ -37,16 +41,17 @@ router.get("/historial-pagos", async (req, res) => {
         p.fecha
       FROM pagos p
       JOIN sucursales s ON p.sucursal_id = s.id
-      WHERE 1 = 1
+      WHERE 1=1
     `;
-
     const params = [];
 
-    if (sucursal_id) {
+    // Si no es admin, filtro sólo por su sucursal
+    if (rol !== "admin") {
       query += " AND p.sucursal_id = ?";
-      params.push(sucursal_id);
+      params.push(sucursalId);
     }
 
+    // Filtros por fechas opcionales
     if (fecha_inicio && fecha_fin) {
       query += " AND DATE(p.fecha) BETWEEN ? AND ?";
       params.push(fecha_inicio, fecha_fin);
@@ -68,8 +73,16 @@ router.get("/historial-pagos", async (req, res) => {
   }
 });
 
-// Pagos por sucursal
-router.get("/pagos-por-sucursal", async (req, res) => {
+// 🔵 Total de pagos por sucursal (solo para admin)
+router.get("/pagos-por-sucursal", authenticate, async (req, res) => {
+  const { rol } = req.user;
+
+  if (rol !== "admin") {
+    return res
+      .status(403)
+      .json({ error: "Acceso denegado: sólo administradores" });
+  }
+
   try {
     const [result] = await pool.promise().query(`
       SELECT 
@@ -87,8 +100,16 @@ router.get("/pagos-por-sucursal", async (req, res) => {
   }
 });
 
-// Resumen financiero: facturado vs pagado
-router.get("/resumen-pagos", async (req, res) => {
+// 🔵 Resumen financiero: facturado vs pagado (solo admin)
+router.get("/resumen-pagos", authenticate, async (req, res) => {
+  const { rol } = req.user;
+
+  if (rol !== "admin") {
+    return res
+      .status(403)
+      .json({ error: "Acceso denegado: sólo administradores" });
+  }
+
   try {
     const [facturadoPorSucursal] = await pool.promise().query(`
       SELECT 
@@ -120,7 +141,7 @@ router.get("/resumen-pagos", async (req, res) => {
       const p = pagosPorSucursal.find((x) => x.sucursal_id === id) || {};
       return {
         sucursal_id: id,
-        sucursal: f.sucursal || p.sucursal || "Desconocida",
+        sucursal: f.sucursal || "Desconocida",
         total_facturado: f.total_facturado || 0,
         total_pagado: p.total_pagado || 0,
         total_pendiente: (f.total_facturado || 0) - (p.total_pagado || 0),

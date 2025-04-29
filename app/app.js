@@ -7,17 +7,19 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Montaje directo sin prefijo para que coincidan las rutas esperadas por el frontend
+// Montaje de rutas
 app.use("/", require("./routes/productos.routes"));
 app.use("/", require("./routes/dashboard.routes"));
 app.use("/", require("./routes/stock.routes"));
-
 app.use("/", require("./routes/ventas.routes"));
 app.use("/", require("./routes/reposiciones.routes"));
 app.use("/", require("./routes/pagos.routes"));
 app.use("/", require("./routes/historial.routes"));
 app.use("/sucursales", require("./routes/sucursales.routes"));
 app.use("/", require("./routes/importar.routes"));
+
+// 🔵 Nueva ruta para Registro y Login
+app.use("/auth", require("./routes/auth.routes"));
 
 app.listen(PORT, () => {
   console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);

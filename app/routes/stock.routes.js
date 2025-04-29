@@ -1,11 +1,15 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../db");
+const authenticate = require("../middlewares/authenticate"); // 🔵 Importar middleware
 
-// Obtener valor total del stock por sucursal
-router.get("/valor-stock-por-sucursal", async (req, res) => {
+// 🔵 Obtener valor total del stock solo de la sucursal del usuario
+router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
+  const { sucursalId } = req.user; // ✅ Sucursal sacada del token
+
   try {
-    const [results] = await pool.promise().query(`
+    const [results] = await pool.promise().query(
+      `
       SELECT 
         s.id AS sucursal_id,
         s.nombre AS sucursal,
@@ -14,8 +18,11 @@ router.get("/valor-stock-por-sucursal", async (req, res) => {
       JOIN gustos g ON st.gusto_id = g.id
       JOIN productos p ON g.producto_id = p.id
       JOIN sucursales s ON st.sucursal_id = s.id
+      WHERE s.id = ?
       GROUP BY s.id, s.nombre
-    `);
+    `,
+      [sucursalId]
+    );
 
     res.json(results);
   } catch (error) {
@@ -24,25 +31,28 @@ router.get("/valor-stock-por-sucursal", async (req, res) => {
   }
 });
 
-// Reposición de stock (registro en historial)
-router.post("/reposicion", async (req, res) => {
-  const { gusto_id, sucursal_id, cantidad } = req.body;
-  if (!gusto_id || !sucursal_id || !cantidad) {
+// 🔵 Registrar reposición (historial incluido)
+router.post("/reposicion", authenticate, async (req, res) => {
+  const { gusto_id, cantidad } = req.body;
+  const { sucursalId } = req.user; // ✅ Usar sucursal del token
+
+  if (!gusto_id || !cantidad) {
     return res.status(400).json({ error: "Faltan datos para la reposición" });
   }
+
   try {
     await pool
       .promise()
       .query(
         "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-        [cantidad, gusto_id, sucursal_id]
+        [cantidad, gusto_id, sucursalId]
       );
 
     await pool
       .promise()
       .query(
         "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, fecha) VALUES (?, ?, ?, NOW())",
-        [gusto_id, sucursal_id, cantidad]
+        [gusto_id, sucursalId, cantidad]
       );
 
     res.json({ mensaje: "Reposición registrada correctamente ✅" });
@@ -52,11 +62,12 @@ router.post("/reposicion", async (req, res) => {
   }
 });
 
-// Reposición rápida (sin historial)
-router.post("/reposicion-rapida", async (req, res) => {
-  const { gusto_id, sucursal_id, cantidad } = req.body;
+// 🔵 Reposición rápida (sin historial)
+router.post("/reposicion-rapida", authenticate, async (req, res) => {
+  const { gusto_id, cantidad } = req.body;
+  const { sucursalId } = req.user; // ✅ Usar sucursal del token
 
-  if (!gusto_id || !sucursal_id || !cantidad) {
+  if (!gusto_id || !cantidad) {
     return res
       .status(400)
       .json({ error: "Faltan datos para la reposición rápida" });
@@ -67,7 +78,7 @@ router.post("/reposicion-rapida", async (req, res) => {
       .promise()
       .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
         gusto_id,
-        sucursal_id,
+        sucursalId,
       ]);
 
     if (existencia.length === 0) {
@@ -75,14 +86,14 @@ router.post("/reposicion-rapida", async (req, res) => {
         .promise()
         .query(
           "INSERT INTO stock (gusto_id, sucursal_id, cantidad) VALUES (?, ?, ?)",
-          [gusto_id, sucursal_id, cantidad]
+          [gusto_id, sucursalId, cantidad]
         );
     } else {
       await pool
         .promise()
         .query(
           "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-          [cantidad, gusto_id, sucursal_id]
+          [cantidad, gusto_id, sucursalId]
         );
     }
 
