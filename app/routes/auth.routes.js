@@ -39,35 +39,43 @@ router.post("/login", async (req, res) => {
   }
 
   try {
+    console.log("🟡 Buscando usuario:", email);
     const [rows] = await pool
       .promise()
       .query("SELECT * FROM usuarios WHERE email = ?", [email]);
 
+    console.log("🟢 Resultado query:", rows);
+
     const user = rows[0];
     if (!user) {
+      console.log("🔴 Usuario no encontrado");
       return res.status(401).json({ error: "Usuario no encontrado" });
     }
 
+    console.log("🟡 Comparando password...");
     const validPassword = await bcrypt.compare(password, user.password_hash);
+    console.log("🟢 Resultado bcrypt:", validPassword);
+
     if (!validPassword) {
+      console.log("🔴 Contraseña incorrecta");
       return res.status(401).json({ error: "Contraseña incorrecta" });
     }
 
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
-      console.error(
-        "❌ JWT_SECRET no está configurado en las variables de entorno"
-      );
+      console.error("❌ JWT_SECRET no está configurado");
       return res
         .status(500)
-        .json({ error: "Error interno: falta configuración del servidor" });
+        .json({ error: "Falta configuración del servidor" });
     }
 
     const token = jwt.sign(
       { userId: user.id, sucursalId: user.sucursal_id, rol: user.rol },
       jwtSecret,
-      { expiresIn: "8h" } // 🔵 Mejor 8h en vez de 1h para que no moleste tanto
+      { expiresIn: "8h" }
     );
+
+    console.log("✅ Login exitoso, generando token");
 
     res.json({ token });
   } catch (error) {
@@ -75,5 +83,6 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ error: "Error al iniciar sesión" });
   }
 });
+
 
 module.exports = router;
