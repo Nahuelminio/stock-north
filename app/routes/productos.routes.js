@@ -243,6 +243,34 @@ router.delete(
   }
 );
 
+router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
+  const { sucursalId } = req.user;
+
+  try {
+    const [results] = await pool.promise().query(
+      `
+      SELECT 
+        s.id AS sucursal_id,
+        s.nombre AS sucursal,
+        SUM(st.cantidad * p.precio) AS valor_total
+      FROM stock st
+      JOIN gustos g ON st.gusto_id = g.id
+      JOIN productos p ON g.producto_id = p.id
+      JOIN sucursales s ON st.sucursal_id = s.id
+      WHERE s.id = ?
+      GROUP BY s.id, s.nombre
+      `,
+      [sucursalId]
+    );
+
+    res.json(results);
+  } catch (error) {
+    console.error("❌ Error al calcular valor de stock por sucursal:", error);
+    res.status(500).json({ error: "Error al obtener valor de stock" });
+  }
+});
+
+
 // 🔵 Buscar producto por código de barra
 router.get(
   "/buscar-por-codigo/:codigo_barra",
