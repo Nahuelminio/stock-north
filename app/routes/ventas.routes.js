@@ -145,5 +145,33 @@ router.get("/total-por-sucursal", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener total de ventas" });
   }
 });
+// 🔵 Ventas mensuales por sucursal (solo admin)
+router.get("/ventas-mensuales-por-sucursal", authenticate, async (req, res) => {
+  const { rol } = req.user;
+
+  if (rol !== "admin") {
+    return res.status(403).json({ error: "Acceso denegado: sólo administradores" });
+  }
+
+  try {
+    const [result] = await pool.promise().query(`
+      SELECT 
+        s.nombre AS sucursal,
+        MONTH(v.fecha) AS mes,
+        YEAR(v.fecha) AS anio,
+        SUM(v.cantidad) AS total_ventas
+      FROM ventas v
+      JOIN sucursales s ON v.sucursal_id = s.id
+      GROUP BY s.id, anio, mes
+      ORDER BY anio DESC, mes DESC, s.nombre
+    `);
+
+    res.json(result);
+  } catch (error) {
+    console.error("❌ Error al obtener ventas mensuales por sucursal:", error);
+    res.status(500).json({ error: "Error al obtener ventas mensuales por sucursal" });
+  }
+});
+
 
 module.exports = router;
