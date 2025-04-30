@@ -7,8 +7,10 @@ const authorizeAdmin = require("../middlewares/authorizeAdmin");
 // 🔵 Obtener todos los productos
 router.get("/", authenticate, async (req, res) => {
   try {
-    const [rows] = await pool.promise().query(
-      `SELECT 
+    const { rol, sucursalId } = req.user;
+
+    let query = `
+      SELECT 
         p.id AS producto_id,
         p.nombre AS producto_nombre,
         p.precio,
@@ -21,8 +23,16 @@ router.get("/", authenticate, async (req, res) => {
       FROM productos p
       JOIN gustos g ON g.producto_id = p.id
       JOIN stock st ON st.gusto_id = g.id
-      JOIN sucursales s ON s.id = st.sucursal_id`
-    );
+      JOIN sucursales s ON s.id = st.sucursal_id
+    `;
+
+    const params = [];
+    if (rol !== "admin") {
+      query += " WHERE s.id = ?";
+      params.push(sucursalId);
+    }
+
+    const [rows] = await pool.promise().query(query, params);
     res.json(rows);
   } catch (error) {
     console.error("❌ Error al obtener productos:", error);
@@ -150,11 +160,9 @@ router.post(
           [codigo_barra, sucursal_id, gusto_id]
         );
         if (existe.length > 0) {
-          return res
-            .status(400)
-            .json({
-              error: "Este código de barras ya existe en esta sucursal",
-            });
+          return res.status(400).json({
+            error: "Este código de barras ya existe en esta sucursal",
+          });
         }
       }
 
@@ -244,22 +252,36 @@ router.delete(
 );
 
 // SOLO PARA PROBAR — no usar en producción
-router.get("/valor-stock-por-sucursal", async (req, res) => {
-  const [results] = await pool.promise().query(`
-    SELECT 
-      s.id AS sucursal_id,
-      s.nombre AS sucursal,
-      SUM(st.cantidad * p.precio) AS valor_total
-    FROM stock st
-    JOIN gustos g ON st.gusto_id = g.id
-    JOIN productos p ON g.producto_id = p.id
-    JOIN sucursales s ON st.sucursal_id = s.id
-    GROUP BY s.id, s.nombre
-  `);
-  res.json(results);
+router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
+  const { rol, sucursalId } = req.user;
+
+  try {
+    let query = `
+      SELECT 
+        s.id AS sucursal_id,
+        s.nombre AS sucursal,
+        SUM(st.cantidad * p.precio) AS valor_total
+      FROM stock st
+      JOIN gustos g ON st.gusto_id = g.id
+      JOIN productos p ON g.producto_id = p.id
+      JOIN sucursales s ON st.sucursal_id = s.id
+    `;
+    const params = [];
+
+    if (rol !== "admin") {
+      query += " WHERE s.id = ?";
+      params.push(sucursalId);
+    }
+
+    query += " GROUP BY s.id, s.nombre";
+
+    const [results] = await pool.promise().query(query, params);
+    res.json(results);
+  } catch (error) {
+    console.error("❌ Error al calcular valor stock:", error);
+    res.status(500).json({ error: "Error interno" });
+  }
 });
-
-
 
 // 🔵 Buscar producto por código de barra
 router.get(
