@@ -4,9 +4,6 @@ const PORT = process.env.PORT || 3000;
 
 const cors = require("cors");
 
-
-const cors = require("cors");
-
 // 🔐 Configuración de CORS
 app.use(
   cors({
