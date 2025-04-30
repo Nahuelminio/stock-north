@@ -5,10 +5,9 @@ const authenticate = require("../middlewares/authenticate");
 
 // 🔵 Registrar pago (solo para la sucursal logueada)
 router.post("/registrar-pago", authenticate, async (req, res) => {
-  const { metodo, monto } = req.body;
-  const { sucursalId } = req.user;
+  const { sucursal_id, metodo, monto } = req.body;
 
-  if (!metodo || !monto) {
+  if (!sucursal_id || !metodo || !monto) {
     return res.status(400).json({ error: "Faltan datos del pago" });
   }
 
@@ -17,7 +16,7 @@ router.post("/registrar-pago", authenticate, async (req, res) => {
       .promise()
       .query(
         "INSERT INTO pagos (sucursal_id, metodo, monto, fecha) VALUES (?, ?, ?, NOW())",
-        [sucursalId, metodo, monto]
+        [sucursal_id, metodo, monto]
       );
     res.json({ mensaje: "✅ Pago registrado" });
   } catch (error) {
@@ -25,6 +24,7 @@ router.post("/registrar-pago", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al registrar el pago" });
   }
 });
+
 
 // 🔵 Historial de pagos
 router.get("/historial-pagos", authenticate, async (req, res) => {
