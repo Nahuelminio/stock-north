@@ -4,7 +4,17 @@ const PORT = process.env.PORT || 3000;
 
 const cors = require("cors");
 
-app.use(cors());
+
+const cors = require("cors");
+
+// 🔐 Configuración de CORS
+app.use(
+  cors({
+    origin: "http://localhost:5173", // o "*" solo si estás probando
+    credentials: true,
+  })
+);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
