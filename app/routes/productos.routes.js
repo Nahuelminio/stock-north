@@ -317,9 +317,10 @@ router.get(
     }
   }
 );
-// 🔵 Ranking de productos más vendidos (solo admin)
+// 🔵 Ranking de productos más vendidos con filtro opcional de mes/año (solo admin)
 router.get("/ranking-productos", authenticate, async (req, res) => {
   const { rol } = req.user;
+  const { mes, anio } = req.query;
 
   if (rol !== "admin") {
     return res
@@ -328,18 +329,31 @@ router.get("/ranking-productos", authenticate, async (req, res) => {
   }
 
   try {
-    const [result] = await pool.promise().query(`
+    let query = `
       SELECT 
         p.nombre AS producto,
         g.nombre AS gusto,
-        SUM(v.cantidad) AS total_vendido
+        SUM(v.cantidad) AS total_vendido,
+        SUM(v.cantidad * p.precio) AS total_facturado
       FROM ventas v
       JOIN gustos g ON v.gusto_id = g.id
       JOIN productos p ON g.producto_id = p.id
+    `;
+
+    const params = [];
+
+    if (mes && anio) {
+      query += " WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?";
+      params.push(mes, anio);
+    }
+
+    query += `
       GROUP BY g.id
       ORDER BY total_vendido DESC
       LIMIT 10
-    `);
+    `;
+
+    const [result] = await pool.promise().query(query, params);
 
     res.json(result);
   } catch (error) {
