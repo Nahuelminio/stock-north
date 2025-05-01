@@ -13,7 +13,7 @@ router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
       SELECT 
         s.id AS sucursal_id,
         s.nombre AS sucursal,
-        SUM(st.cantidad * p.precio) AS valor_total
+        SUM(st.cantidad * st.precio) AS valor_total
       FROM stock st
       JOIN gustos g ON st.gusto_id = g.id
       JOIN productos p ON g.producto_id = p.id
@@ -30,6 +30,7 @@ router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener valor de stock" });
   }
 });
+
 
 // 🔵 Registrar reposición (historial incluido)
 router.post("/reposicion", authenticate, async (req, res) => {

@@ -79,7 +79,6 @@ router.get("/ventas-mensuales", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener ventas mensuales" });
   }
 });
-
 // 🔵 Historial de ventas (filtrado automático por sucursal si no es admin)
 router.get("/historial", authenticate, async (req, res) => {
   const { sucursalId, rol } = req.user;
@@ -92,12 +91,13 @@ router.get("/historial", authenticate, async (req, res) => {
         p.nombre AS producto,
         g.nombre AS gusto,
         v.cantidad,
-        p.precio,
+        st.precio,
         v.fecha
       FROM ventas v
       JOIN gustos g ON v.gusto_id = g.id
       JOIN productos p ON g.producto_id = p.id
       JOIN sucursales s ON v.sucursal_id = s.id
+      JOIN stock st ON st.gusto_id = g.id AND st.sucursal_id = v.sucursal_id
     `;
     const params = [];
 
@@ -131,11 +131,12 @@ router.get("/total-por-sucursal", authenticate, async (req, res) => {
       SELECT 
         s.id AS sucursal_id,
         s.nombre AS sucursal,
-        SUM(v.cantidad * p.precio) AS total_facturado
+        SUM(v.cantidad * st.precio) AS total_facturado
       FROM ventas v
       JOIN gustos g ON v.gusto_id = g.id
       JOIN productos p ON g.producto_id = p.id
       JOIN sucursales s ON v.sucursal_id = s.id
+      JOIN stock st ON st.gusto_id = g.id AND st.sucursal_id = v.sucursal_id
       GROUP BY s.id, s.nombre
     `);
 
@@ -145,6 +146,7 @@ router.get("/total-por-sucursal", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener total de ventas" });
   }
 });
+
 // 🔵 Ventas mensuales por sucursal (solo admin)
 router.get("/ventas-mensuales-por-sucursal", authenticate, async (req, res) => {
   const { rol } = req.user;

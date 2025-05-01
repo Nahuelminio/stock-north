@@ -13,13 +13,13 @@ router.get("/", authenticate, async (req, res) => {
       SELECT 
         p.id AS producto_id,
         p.nombre AS producto_nombre,
-        p.precio,
         g.id AS gusto_id,
         g.nombre AS gusto,
         g.codigo_barra,
         s.id AS sucursal_id,
         s.nombre AS sucursal,
-        st.cantidad AS stock
+        st.cantidad AS stock,
+        st.precio AS precio
       FROM productos p
       JOIN gustos g ON g.producto_id = p.id
       JOIN stock st ON st.gusto_id = g.id
@@ -37,28 +37,6 @@ router.get("/", authenticate, async (req, res) => {
   } catch (error) {
     console.error("❌ Error al obtener productos:", error);
     res.status(500).json({ error: "Error al obtener productos" });
-  }
-});
-
-// 🔵 Verificar código duplicado por sucursal
-router.get("/verificar-codigo", authenticate, async (req, res) => {
-  const { codigo_barra, sucursal_id, gusto_id } = req.query;
-
-  try {
-    const [result] = await pool.promise().query(
-      `SELECT g.id FROM gustos g
-       JOIN stock st ON st.gusto_id = g.id
-       WHERE g.codigo_barra = ? AND st.sucursal_id = ?
-       ${gusto_id ? "AND g.id != ?" : ""}`,
-      gusto_id
-        ? [codigo_barra, sucursal_id, gusto_id]
-        : [codigo_barra, sucursal_id]
-    );
-
-    res.json({ existe: result.length > 0 });
-  } catch (error) {
-    console.error("❌ Error al verificar código:", error);
-    res.status(500).json({ error: "Error al verificar código" });
   }
 });
 
@@ -98,19 +76,10 @@ router.post("/agregar", authenticate, authorizeAdmin, async (req, res) => {
 
     if (producto?.id) {
       producto_id = producto.id;
-      await pool
-        .promise()
-        .query("UPDATE productos SET precio = ? WHERE id = ?", [
-          precio,
-          producto_id,
-        ]);
     } else {
       const [insert] = await pool
         .promise()
-        .query("INSERT INTO productos (nombre, precio) VALUES (?, ?)", [
-          nombre,
-          precio,
-        ]);
+        .query("INSERT INTO productos (nombre) VALUES (?)", [nombre]);
       producto_id = insert.insertId;
     }
 
@@ -124,8 +93,8 @@ router.post("/agregar", authenticate, authorizeAdmin, async (req, res) => {
     await pool
       .promise()
       .query(
-        "INSERT INTO stock (gusto_id, sucursal_id, cantidad) VALUES (?, ?, ?)",
-        [gustoInsert.insertId, sucursal_id, stock]
+        "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
+        [gustoInsert.insertId, sucursal_id, stock, precio]
       );
 
     res.status(200).json({ mensaje: "Producto agregado correctamente" });
@@ -141,22 +110,15 @@ router.post(
   authenticate,
   authorizeAdmin,
   async (req, res) => {
-    const {
-      stock,
-      sucursal_id,
-      nuevoGusto,
-      precio,
-      producto_id,
-      codigo_barra,
-    } = req.body;
+    const { stock, sucursal_id, nuevoGusto, precio, codigo_barra } = req.body;
     const { gusto_id } = req.params;
 
     try {
       if (codigo_barra) {
         const [existe] = await pool.promise().query(
           `SELECT g.id FROM gustos g
-         JOIN stock st ON st.gusto_id = g.id
-         WHERE g.codigo_barra = ? AND st.sucursal_id = ? AND g.id != ?`,
+           JOIN stock st ON st.gusto_id = g.id
+           WHERE g.codigo_barra = ? AND st.sucursal_id = ? AND g.id != ?`,
           [codigo_barra, sucursal_id, gusto_id]
         );
         if (existe.length > 0) {
@@ -178,18 +140,9 @@ router.post(
       await pool
         .promise()
         .query(
-          "UPDATE stock SET cantidad = ? WHERE gusto_id = ? AND sucursal_id = ?",
-          [stock, gusto_id, sucursal_id]
+          "UPDATE stock SET cantidad = ?, precio = ? WHERE gusto_id = ? AND sucursal_id = ?",
+          [stock, precio, gusto_id, sucursal_id]
         );
-
-      if (precio !== undefined && producto_id) {
-        await pool
-          .promise()
-          .query("UPDATE productos SET precio = ? WHERE id = ?", [
-            precio,
-            producto_id,
-          ]);
-      }
 
       res.json({ mensaje: "Producto actualizado correctamente" });
     } catch (error) {
@@ -215,7 +168,8 @@ router.get("/disponibles", authenticate, async (req, res) => {
         g.id AS gusto_id,
         g.nombre AS gusto,
         g.codigo_barra,
-        st.cantidad AS stock
+        st.cantidad AS stock,
+        st.precio AS precio
       FROM productos p
       JOIN gustos g ON g.producto_id = p.id
       JOIN stock st ON st.gusto_id = g.id
@@ -229,29 +183,7 @@ router.get("/disponibles", authenticate, async (req, res) => {
   }
 });
 
-// 🔵 Eliminar gusto (solo admin)
-router.delete(
-  "/eliminar-gusto/:gusto_id",
-  authenticate,
-  authorizeAdmin,
-  async (req, res) => {
-    const { gusto_id } = req.params;
-
-    try {
-      await pool
-        .promise()
-        .query("DELETE FROM stock WHERE gusto_id = ?", [gusto_id]);
-      await pool.promise().query("DELETE FROM gustos WHERE id = ?", [gusto_id]);
-
-      res.json({ mensaje: "Gusto eliminado correctamente" });
-    } catch (error) {
-      console.error("❌ Error al eliminar gusto:", error);
-      res.status(500).json({ error: "No se pudo eliminar el gusto" });
-    }
-  }
-);
-
-// SOLO PARA PROBAR — no usar en producción
+// 🔵 Valor del stock por sucursal (usa precio de stock)
 router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
   const { rol, sucursalId } = req.user;
 
@@ -260,10 +192,9 @@ router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
       SELECT 
         s.id AS sucursal_id,
         s.nombre AS sucursal,
-        SUM(st.cantidad * p.precio) AS valor_total
+        SUM(st.cantidad * st.precio) AS valor_total
       FROM stock st
       JOIN gustos g ON st.gusto_id = g.id
-      JOIN productos p ON g.producto_id = p.id
       JOIN sucursales s ON st.sucursal_id = s.id
     `;
     const params = [];
@@ -283,41 +214,7 @@ router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
   }
 });
 
-// 🔵 Buscar producto por código de barra
-router.get(
-  "/buscar-por-codigo/:codigo_barra",
-  authenticate,
-  async (req, res) => {
-    const { codigo_barra } = req.params;
-
-    try {
-      const [result] = await pool.promise().query(
-        `SELECT 
-        p.id AS producto_id,
-        p.nombre AS producto,
-        g.id AS gusto_id,
-        g.nombre AS gusto,
-        g.codigo_barra,
-        p.precio
-      FROM gustos g
-      JOIN productos p ON g.producto_id = p.id
-      WHERE g.codigo_barra = ?
-      LIMIT 1`,
-        [codigo_barra]
-      );
-
-      if (result.length === 0) {
-        return res.status(404).json({ error: "Producto no encontrado" });
-      }
-
-      res.json(result[0]);
-    } catch (error) {
-      console.error("❌ Error al buscar por código de barra:", error);
-      res.status(500).json({ error: "Error al buscar producto" });
-    }
-  }
-);
-// 🔵 Ranking de productos más vendidos con filtro opcional de mes/año (solo admin)
+// 🔵 Ranking de productos más vendidos (usa precio de stock)
 router.get("/ranking-productos", authenticate, async (req, res) => {
   const { rol } = req.user;
   const { mes, anio } = req.query;
@@ -334,10 +231,11 @@ router.get("/ranking-productos", authenticate, async (req, res) => {
         p.nombre AS producto,
         g.nombre AS gusto,
         SUM(v.cantidad) AS total_vendido,
-        SUM(v.cantidad * p.precio) AS total_facturado
+        SUM(v.cantidad * st.precio) AS total_facturado
       FROM ventas v
       JOIN gustos g ON v.gusto_id = g.id
       JOIN productos p ON g.producto_id = p.id
+      JOIN stock st ON st.gusto_id = g.id AND st.sucursal_id = v.sucursal_id
     `;
 
     const params = [];
@@ -361,6 +259,5 @@ router.get("/ranking-productos", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener ranking de productos" });
   }
 });
-
 
 module.exports = router;

@@ -1,7 +1,6 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../db");
-
 // Historial de ventas
 router.get("/ventas", async (req, res) => {
   const { sucursal_id } = req.query;
@@ -13,12 +12,13 @@ router.get("/ventas", async (req, res) => {
         p.nombre AS producto,
         g.nombre AS gusto,
         v.cantidad,
-        p.precio,
+        st.precio,
         v.fecha
       FROM ventas v
       JOIN gustos g ON v.gusto_id = g.id
       JOIN productos p ON g.producto_id = p.id
       JOIN sucursales s ON v.sucursal_id = s.id
+      JOIN stock st ON st.gusto_id = g.id AND st.sucursal_id = v.sucursal_id
     `;
 
     const params = [];
@@ -35,6 +35,7 @@ router.get("/ventas", async (req, res) => {
     res.status(500).json({ error: "Error al obtener historial de ventas" });
   }
 });
+
 
 // Historial de reposiciones
 router.get("/reposiciones", async (req, res) => {
