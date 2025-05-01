@@ -317,5 +317,36 @@ router.get(
     }
   }
 );
+// 🔵 Ranking de productos más vendidos (solo admin)
+router.get("/ranking-productos", authenticate, async (req, res) => {
+  const { rol } = req.user;
+
+  if (rol !== "admin") {
+    return res
+      .status(403)
+      .json({ error: "Acceso denegado: sólo administradores" });
+  }
+
+  try {
+    const [result] = await pool.promise().query(`
+      SELECT 
+        p.nombre AS producto,
+        g.nombre AS gusto,
+        SUM(v.cantidad) AS total_vendido
+      FROM ventas v
+      JOIN gustos g ON v.gusto_id = g.id
+      JOIN productos p ON g.producto_id = p.id
+      GROUP BY g.id
+      ORDER BY total_vendido DESC
+      LIMIT 10
+    `);
+
+    res.json(result);
+  } catch (error) {
+    console.error("❌ Error al obtener ranking de productos:", error);
+    res.status(500).json({ error: "Error al obtener ranking de productos" });
+  }
+});
+
 
 module.exports = router;

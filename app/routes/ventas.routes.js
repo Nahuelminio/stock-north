@@ -150,7 +150,9 @@ router.get("/ventas-mensuales-por-sucursal", authenticate, async (req, res) => {
   const { rol } = req.user;
 
   if (rol !== "admin") {
-    return res.status(403).json({ error: "Acceso denegado: sólo administradores" });
+    return res
+      .status(403)
+      .json({ error: "Acceso denegado: sólo administradores" });
   }
 
   try {
@@ -169,9 +171,10 @@ router.get("/ventas-mensuales-por-sucursal", authenticate, async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error("❌ Error al obtener ventas mensuales por sucursal:", error);
-    res.status(500).json({ error: "Error al obtener ventas mensuales por sucursal" });
+    res
+      .status(500)
+      .json({ error: "Error al obtener ventas mensuales por sucursal" });
   }
 });
-
 
 module.exports = router;
