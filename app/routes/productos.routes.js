@@ -103,6 +103,27 @@ router.post("/agregar", authenticate, authorizeAdmin, async (req, res) => {
     res.status(500).json({ error: "No se pudo agregar producto" });
   }
 });
+// 🔵 Eliminar gusto (solo admin)
+router.delete(
+  "/eliminar-gusto/:gusto_id",
+  authenticate,
+  authorizeAdmin,
+  async (req, res) => {
+    const { gusto_id } = req.params;
+
+    try {
+      await pool
+        .promise()
+        .query("DELETE FROM stock WHERE gusto_id = ?", [gusto_id]);
+      await pool.promise().query("DELETE FROM gustos WHERE id = ?", [gusto_id]);
+
+      res.json({ mensaje: "Gusto eliminado correctamente" });
+    } catch (error) {
+      console.error("❌ Error al eliminar gusto:", error);
+      res.status(500).json({ error: "No se pudo eliminar el gusto" });
+    }
+  }
+);
 
 // 🔵 Editar producto (solo admin)
 router.post(
