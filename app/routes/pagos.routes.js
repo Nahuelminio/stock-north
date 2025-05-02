@@ -99,7 +99,6 @@ router.get("/pagos-por-sucursal", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener pagos" });
   }
 });
-
 // 🔵 Resumen financiero: facturado vs pagado (solo admin)
 router.get("/resumen-pagos", authenticate, async (req, res) => {
   const { rol } = req.user;
@@ -115,11 +114,11 @@ router.get("/resumen-pagos", authenticate, async (req, res) => {
       SELECT 
         v.sucursal_id, 
         s.nombre AS sucursal,
-        SUM(v.cantidad * p.precio) AS total_facturado
+        SUM(v.cantidad * st.precio) AS total_facturado
       FROM ventas v
       JOIN gustos g ON v.gusto_id = g.id
-      JOIN productos p ON g.producto_id = p.id
       JOIN sucursales s ON v.sucursal_id = s.id
+      JOIN stock st ON st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id
       GROUP BY v.sucursal_id, s.nombre
     `);
 
@@ -154,5 +153,6 @@ router.get("/resumen-pagos", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener resumen financiero" });
   }
 });
+
 
 module.exports = router;
