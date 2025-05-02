@@ -58,9 +58,12 @@ router.get("/ventas-mensuales", authenticate, async (req, res) => {
     let query = `
       SELECT 
         s.nombre AS sucursal,
-        SUM(v.cantidad) AS total_ventas
+        SUM(v.cantidad) AS total_ventas,
+        SUM(v.cantidad * st.precio) AS total_facturado
       FROM ventas v
       JOIN sucursales s ON v.sucursal_id = s.id
+      JOIN gustos g ON v.gusto_id = g.id
+      JOIN stock st ON st.gusto_id = g.id AND st.sucursal_id = v.sucursal_id
       WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?
     `;
     const params = [mes, anio];
@@ -79,6 +82,7 @@ router.get("/ventas-mensuales", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener ventas mensuales" });
   }
 });
+
 // 🔵 Historial de ventas (filtrado automático por sucursal si no es admin)
 router.get("/historial", authenticate, async (req, res) => {
   const { sucursalId, rol } = req.user;
@@ -134,9 +138,8 @@ router.get("/total-por-sucursal", authenticate, async (req, res) => {
         SUM(v.cantidad * st.precio) AS total_facturado
       FROM ventas v
       JOIN gustos g ON v.gusto_id = g.id
-      JOIN productos p ON g.producto_id = p.id
-      JOIN sucursales s ON v.sucursal_id = s.id
       JOIN stock st ON st.gusto_id = g.id AND st.sucursal_id = v.sucursal_id
+      JOIN sucursales s ON v.sucursal_id = s.id
       GROUP BY s.id, s.nombre
     `);
 
@@ -163,9 +166,12 @@ router.get("/ventas-mensuales-por-sucursal", authenticate, async (req, res) => {
         s.nombre AS sucursal,
         MONTH(v.fecha) AS mes,
         YEAR(v.fecha) AS anio,
-        SUM(v.cantidad) AS total_ventas
+        SUM(v.cantidad) AS total_ventas,
+        SUM(v.cantidad * st.precio) AS total_facturado
       FROM ventas v
       JOIN sucursales s ON v.sucursal_id = s.id
+      JOIN gustos g ON v.gusto_id = g.id
+      JOIN stock st ON st.gusto_id = g.id AND st.sucursal_id = v.sucursal_id
       GROUP BY s.id, anio, mes
       ORDER BY anio DESC, mes DESC, s.nombre
     `);
