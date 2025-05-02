@@ -1,28 +1,50 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../db");
+const authenticate = require("../middlewares/authenticate");
 
-// Registrar una reposición normal
-router.post("/reposicion", async (req, res) => {
-  const { gusto_id, sucursal_id, cantidad } = req.body;
+// 🔵 Registrar reposición (historial incluido)
+router.post("/reposicion", authenticate, async (req, res) => {
+  const { gusto_id, cantidad } = req.body;
+  const { sucursalId } = req.user;
 
-  if (!gusto_id || !sucursal_id || !cantidad) {
+  if (!gusto_id || !cantidad) {
     return res.status(400).json({ error: "Faltan datos para la reposición" });
   }
 
   try {
-    await pool
+    // Chequear si ya existe ese stock
+    const [stockExistente] = await pool
       .promise()
-      .query(
-        "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-        [cantidad, gusto_id, sucursal_id]
-      );
+      .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
+        gusto_id,
+        sucursalId,
+      ]);
 
+    if (stockExistente.length === 0) {
+      // No existe, lo creamos con precio 0
+      await pool
+        .promise()
+        .query(
+          "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
+          [gusto_id, sucursalId, cantidad, 0]
+        );
+    } else {
+      // Ya existe, actualizamos la cantidad
+      await pool
+        .promise()
+        .query(
+          "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
+          [cantidad, gusto_id, sucursalId]
+        );
+    }
+
+    // Registramos en el historial
     await pool
       .promise()
       .query(
         "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, fecha) VALUES (?, ?, ?, NOW())",
-        [gusto_id, sucursal_id, cantidad]
+        [gusto_id, sucursalId, cantidad]
       );
 
     res.json({ mensaje: "Reposición registrada correctamente ✅" });
@@ -32,8 +54,8 @@ router.post("/reposicion", async (req, res) => {
   }
 });
 
-// Reposición rápida sin historial
-router.post("/reposicion-rapida", async (req, res) => {
+// 🔵 Reposición rápida (sin historial)
+router.post("/reposicion-rapida", authenticate, async (req, res) => {
   const { gusto_id, sucursal_id, cantidad } = req.body;
 
   if (!gusto_id || !sucursal_id || !cantidad) {
@@ -54,8 +76,8 @@ router.post("/reposicion-rapida", async (req, res) => {
       await pool
         .promise()
         .query(
-          "INSERT INTO stock (gusto_id, sucursal_id, cantidad) VALUES (?, ?, ?)",
-          [gusto_id, sucursal_id, cantidad]
+          "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
+          [gusto_id, sucursal_id, cantidad, 0]
         );
     } else {
       await pool
@@ -73,8 +95,8 @@ router.post("/reposicion-rapida", async (req, res) => {
   }
 });
 
-// Reposición por código de barras
-router.post("/reposicion-por-codigo", async (req, res) => {
+// 🔵 Reposición por código de barras
+router.post("/reposicion-por-codigo", authenticate, async (req, res) => {
   const { codigo_barra, sucursal_id, cantidad } = req.body;
 
   if (!codigo_barra || !sucursal_id || !cantidad) {
@@ -106,8 +128,8 @@ router.post("/reposicion-por-codigo", async (req, res) => {
       await pool
         .promise()
         .query(
-          "INSERT INTO stock (gusto_id, sucursal_id, cantidad) VALUES (?, ?, ?)",
-          [gusto_id, sucursal_id, cantidad]
+          "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
+          [gusto_id, sucursal_id, cantidad, 0]
         );
     } else {
       await pool
@@ -132,8 +154,8 @@ router.post("/reposicion-por-codigo", async (req, res) => {
   }
 });
 
-// Historial de reposiciones con filtros
-router.get("/historial-reposiciones", async (req, res) => {
+// 🔵 Historial de reposiciones con filtros
+router.get("/historial-reposiciones", authenticate, async (req, res) => {
   const { producto, gusto, sucursal_id, fecha_inicio, fecha_fin } = req.query;
 
   try {
