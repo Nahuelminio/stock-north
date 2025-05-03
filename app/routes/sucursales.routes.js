@@ -1,5 +1,7 @@
 const express = require("express");
 const router = express.Router();
+const authenticate = require("../middlewares/authenticate");
+
 const pool = require("../db");
 
 // GET /sucursales
@@ -29,7 +31,9 @@ router.post("/", async (req, res) => {
     res.status(500).json({ error: "No se pudo crear la sucursal" });
   }
 });
-router.get("/sucursales/:id", authenticate, async (req, res) => {
+
+// ✅ GET /sucursales/:id
+router.get("/:id", authenticate, async (req, res) => {
   try {
     const [result] = await pool
       .promise()
@@ -45,6 +49,5 @@ router.get("/sucursales/:id", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener la sucursal" });
   }
 });
-
 
 module.exports = router;
