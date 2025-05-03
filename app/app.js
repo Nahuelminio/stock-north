@@ -7,7 +7,7 @@ const cors = require("cors");
 // 🔐 Configuración de CORS
 app.use(
   cors({
-    origin: "http://localhost:5173", // o "*" solo si estás probando
+    origin: ["http://localhost:5173", "https://socknorth.net"], // ✅ agregá tu dominio de producción
     credentials: true,
   })
 );
