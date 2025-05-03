@@ -29,5 +29,22 @@ router.post("/", async (req, res) => {
     res.status(500).json({ error: "No se pudo crear la sucursal" });
   }
 });
+router.get("/sucursales/:id", authenticate, async (req, res) => {
+  try {
+    const [result] = await pool
+      .promise()
+      .query("SELECT id, nombre FROM sucursales WHERE id = ?", [req.params.id]);
+
+    if (result.length === 0) {
+      return res.status(404).json({ error: "Sucursal no encontrada" });
+    }
+
+    res.json(result[0]);
+  } catch (err) {
+    console.error("❌ Error al obtener la sucursal:", err);
+    res.status(500).json({ error: "Error al obtener la sucursal" });
+  }
+});
+
 
 module.exports = router;
