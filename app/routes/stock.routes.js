@@ -1,11 +1,11 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../db");
-const authenticate = require("../middlewares/authenticate"); // 🔵 Importar middleware
+const authenticate = require("../middlewares/authenticate");
 
 // 🔵 Obtener valor total del stock solo de la sucursal del usuario
 router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
-  const { sucursalId } = req.user; // ✅ Sucursal sacada del token
+  const { sucursalId } = req.user;
 
   try {
     const [results] = await pool.promise().query(
@@ -15,8 +15,6 @@ router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
         s.nombre AS sucursal,
         SUM(st.cantidad * st.precio) AS valor_total
       FROM stock st
-      JOIN gustos g ON st.gusto_id = g.id
-      JOIN productos p ON g.producto_id = p.id
       JOIN sucursales s ON st.sucursal_id = s.id
       WHERE s.id = ?
       GROUP BY s.id, s.nombre
@@ -31,7 +29,35 @@ router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
   }
 });
 
+// 🔵 Utilidad: Manejar inserción o actualización de stock
+async function upsertStock(gustoId, sucursalId, cantidad, precio = 0) {
+  const [existencia] = await pool
+    .promise()
+    .query("SELECT id FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
+      gustoId,
+      sucursalId,
+    ]);
 
+  if (existencia.length === 0) {
+    console.log("🆕 Creando nuevo stock...");
+    await pool
+      .promise()
+      .query(
+        "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
+        [gustoId, sucursalId, cantidad, precio]
+      );
+  } else {
+    console.log("✏️ Actualizando stock existente...");
+    await pool
+      .promise()
+      .query(
+        "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
+        [cantidad, gustoId, sucursalId]
+      );
+  }
+}
+
+// 🔵 Registrar reposición (solo admin)
 router.post("/reposicion", authenticate, async (req, res) => {
   const { gusto_id, cantidad, sucursal_id } = req.body;
 
@@ -44,6 +70,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
     });
   }
 
+  // Validación básica
   if (!gusto_id || !cantidad || !sucursal_id) {
     console.log("❌ ERROR: Faltan datos =>", {
       gusto_id,
@@ -51,8 +78,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
       sucursal_id,
     });
     return res.status(400).json({
-      error:
-        "Faltan datos para la reposición (gusto_id, cantidad, sucursal_id son obligatorios)",
+      error: "Faltan datos: gusto_id, cantidad y sucursal_id son obligatorios",
     });
   }
 
@@ -67,46 +93,17 @@ router.post("/reposicion", authenticate, async (req, res) => {
   });
 
   if (
-    isNaN(gustoIdNum) ||
-    isNaN(cantidadNum) ||
-    isNaN(sucursalIdNum) ||
-    !gustoIdNum ||
-    !cantidadNum ||
-    !sucursalIdNum
+    [gustoIdNum, cantidadNum, sucursalIdNum].some(
+      (num) => isNaN(num) || num <= 0
+    )
   ) {
-    console.log("❌ ERROR: Datos inválidos después de convertir");
     return res.status(400).json({
-      error: "Los datos enviados no son válidos (deben ser números válidos)",
+      error: "Todos los datos deben ser números válidos y mayores que cero",
     });
   }
 
   try {
-    const [stockExistente] = await pool
-      .promise()
-      .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
-        gustoIdNum,
-        sucursalIdNum,
-      ]);
-
-    console.log("🔎 Stock existente:", stockExistente);
-
-    if (stockExistente.length === 0) {
-      console.log("🆕 Creando nuevo stock...");
-      await pool
-        .promise()
-        .query(
-          "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
-          [gustoIdNum, sucursalIdNum, cantidadNum, 0]
-        );
-    } else {
-      console.log("✏️ Actualizando stock existente...");
-      await pool
-        .promise()
-        .query(
-          "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-          [cantidadNum, gustoIdNum, sucursalIdNum]
-        );
-    }
+    await upsertStock(gustoIdNum, sucursalIdNum, cantidadNum);
 
     console.log("📝 Registrando en historial...");
     await pool
@@ -124,42 +121,36 @@ router.post("/reposicion", authenticate, async (req, res) => {
   }
 });
 
-
-// 🔵 Reposición rápida (sin historial)
+// 🔵 Reposición rápida (sin historial, para cualquier rol)
 router.post("/reposicion-rapida", authenticate, async (req, res) => {
   const { gusto_id, cantidad } = req.body;
-  const { sucursalId } = req.user; // ✅ Usar sucursal del token
+  const { sucursalId } = req.user;
+
+  console.log("➡️ Reposición rápida recibida:", {
+    gusto_id,
+    cantidad,
+    sucursalId,
+  });
 
   if (!gusto_id || !cantidad) {
     return res
       .status(400)
-      .json({ error: "Faltan datos para la reposición rápida" });
+      .json({ error: "Faltan datos: gusto_id y cantidad son obligatorios" });
+  }
+
+  const gustoIdNum = parseInt(gusto_id, 10);
+  const cantidadNum = parseInt(cantidad, 10);
+
+  if ([gustoIdNum, cantidadNum].some((num) => isNaN(num) || num <= 0)) {
+    return res.status(400).json({
+      error: "Los datos deben ser números válidos y mayores que cero",
+    });
   }
 
   try {
-    const [existencia] = await pool
-      .promise()
-      .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
-        gusto_id,
-        sucursalId,
-      ]);
+    await upsertStock(gustoIdNum, sucursalId, cantidadNum);
 
-    if (existencia.length === 0) {
-      await pool
-        .promise()
-        .query(
-          "INSERT INTO stock (gusto_id, sucursal_id, cantidad) VALUES (?, ?, ?)",
-          [gusto_id, sucursalId, cantidad]
-        );
-    } else {
-      await pool
-        .promise()
-        .query(
-          "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-          [cantidad, gusto_id, sucursalId]
-        );
-    }
-
+    console.log("✅ Reposición rápida realizada");
     res.json({ mensaje: "✅ Reposición rápida realizada" });
   } catch (error) {
     console.error("❌ Error en reposición rápida:", error);
