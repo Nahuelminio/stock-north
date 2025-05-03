@@ -144,7 +144,7 @@ router.get("/resumen-pagos", authenticate, async (req, res) => {
   }
 });
 
-// 🔵 Resumen financiero solo para SUCURSAL logueada
+// 🔵 Resumen financiero solo para SUCURSAL logueada (corrigiendo join)
 router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
   const { sucursalId } = req.user;
 
@@ -160,9 +160,10 @@ router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
       LEFT JOIN (
         SELECT 
           v.sucursal_id, 
-          SUM(v.cantidad * g.precio) AS total_facturado
+          SUM(v.cantidad * st.precio) AS total_facturado
         FROM ventas v
-        JOIN gustos g ON v.gusto_id = g.id
+        JOIN stock st 
+          ON v.gusto_id = st.gusto_id AND v.sucursal_id = st.sucursal_id
         WHERE v.sucursal_id = ?
         GROUP BY v.sucursal_id
       ) f ON s.id = f.sucursal_id
@@ -181,12 +182,13 @@ router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
       return res.status(404).json({ error: "Sucursal no encontrada" });
     }
 
-    res.json(resultado[0]);  // Devolvemos solo un objeto (esa sucursal)
+    res.json(resultado[0]);
   } catch (error) {
     console.error("❌ Error al obtener resumen financiero de sucursal:", error);
     res.status(500).json({ error: "Error al obtener resumen financiero" });
   }
 });
+
 
 
 module.exports = router;
