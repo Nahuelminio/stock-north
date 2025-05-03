@@ -25,6 +25,7 @@ router.post("/registrar-pago", authenticate, async (req, res) => {
   }
 });
 
+
 // 🔵 Historial de pagos
 router.get("/historial-pagos", authenticate, async (req, res) => {
   const { fecha_inicio, fecha_fin } = req.query;
@@ -98,48 +99,51 @@ router.get("/pagos-por-sucursal", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener pagos" });
   }
 });
+// 🔵 Resumen financiero: facturado vs pagado (solo admin)
 router.get("/resumen-pagos", authenticate, async (req, res) => {
-  const { rol, sucursalId } = req.user;
+  const { rol } = req.user;
+
+  if (rol !== "admin") {
+    return res
+      .status(403)
+      .json({ error: "Acceso denegado: sólo administradores" });
+  }
 
   try {
-    if (rol === "admin") {
-      // 🔄 lo mismo que ya tenés: devolver resumen global
-    } else {
-      // ✅ devolver solo su propia sucursal
-      const [facturadoRow] = await pool.promise().query(
-        `
-        SELECT SUM(v.cantidad * st.precio) AS total_facturado
-        FROM ventas v
-        JOIN gustos g ON v.gusto_id = g.id
-        JOIN stock st ON st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id
-        WHERE v.sucursal_id = ?
-      `,
-        [sucursalId]
-      );
+    const [resumen] = await pool.promise().query(`
+      SELECT 
+          s.id AS sucursal_id,
+          s.nombre AS sucursal,
+          COALESCE(v.total_facturado, 0) AS total_facturado,
+          COALESCE(p.total_pagado, 0) AS total_pagado,
+          (COALESCE(v.total_facturado, 0) - COALESCE(p.total_pagado, 0)) AS total_pendiente
+      FROM sucursales s
+      LEFT JOIN (
+          SELECT 
+              v.sucursal_id, 
+              SUM(v.cantidad * st.precio) AS total_facturado
+          FROM ventas v
+          JOIN stock st 
+              ON v.gusto_id = st.gusto_id AND v.sucursal_id = st.sucursal_id
+          GROUP BY v.sucursal_id
+      ) v ON s.id = v.sucursal_id
+      LEFT JOIN (
+          SELECT 
+              sucursal_id, 
+              SUM(monto) AS total_pagado
+          FROM pagos
+          GROUP BY sucursal_id
+      ) p ON s.id = p.sucursal_id
+      ORDER BY s.nombre
+    `);
 
-      const [pagosRow] = await pool.promise().query(
-        `
-        SELECT SUM(monto) AS total_pagado
-        FROM pagos
-        WHERE sucursal_id = ?
-      `,
-        [sucursalId]
-      );
-
-      const totalFacturado = facturadoRow[0].total_facturado || 0;
-      const totalPagado = pagosRow[0].total_pagado || 0;
-
-      res.json({
-        sucursal_id: sucursalId,
-        total_facturado: totalFacturado,
-        total_pagado: totalPagado,
-        deuda: totalFacturado - totalPagado,
-      });
-    }
-  } catch (err) {
-    console.error(err);
+    res.json(resumen);
+  } catch (error) {
+    console.error("❌ Error al obtener resumen financiero:", error);
     res.status(500).json({ error: "Error al obtener resumen financiero" });
   }
 });
+
+
 
 module.exports = router;
