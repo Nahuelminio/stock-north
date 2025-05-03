@@ -7,8 +7,7 @@ const authenticate = require("../middlewares/authenticate");
 router.post("/reposicion", authenticate, async (req, res) => {
   const { gusto_id, cantidad, sucursal_id } = req.body;
 
-  console.log("➡️ req.user:", req.user);
-  console.log("📦 Body recibido:", req.body);
+  console.log("➡️ Body recibido:", { gusto_id, cantidad, sucursal_id });
 
   // 🔒 Solo permitir al admin
   if (req.user.rol !== "admin") {
@@ -17,28 +16,31 @@ router.post("/reposicion", authenticate, async (req, res) => {
     });
   }
 
-  // ✅ Validamos que llegue sucursal_id, gusto_id y cantidad, todos numéricos y no vacíos
+  // Validación extra (asegurar que son números)
   if (
-    gusto_id === undefined ||
-    cantidad === undefined ||
-    sucursal_id === undefined ||
-    gusto_id === "" ||
-    cantidad === "" ||
-    sucursal_id === "" ||
+    !gusto_id ||
+    !cantidad ||
+    !sucursal_id ||
     isNaN(gusto_id) ||
     isNaN(cantidad) ||
     isNaN(sucursal_id)
   ) {
     return res.status(400).json({
       error:
-        "Faltan datos válidos: gusto_id, cantidad y sucursal_id deben ser numéricos y no vacíos",
+        "Faltan datos válidos: gusto_id, cantidad y sucursal_id deben ser numéricos",
     });
   }
 
-  // 🔢 Convertimos a números seguros
-  const gustoIdNum = parseInt(gusto_id);
-  const cantidadNum = parseInt(cantidad);
-  const sucursalIdNum = parseInt(sucursal_id);
+  // ✅ Convertimos a número para evitar problemas de NULL
+  const gustoIdNum = Number(gusto_id);
+  const cantidadNum = Number(cantidad);
+  const sucursalIdNum = Number(sucursal_id);
+
+  console.log("➡️ Convertidos a número:", {
+    gustoIdNum,
+    cantidadNum,
+    sucursalIdNum,
+  });
 
   try {
     // Chequear si ya existe ese stock
@@ -51,6 +53,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
 
     if (stockExistente.length === 0) {
       // No existe, lo creamos con precio 0 por defecto
+      console.log("🆕 Creando nuevo stock...");
       await pool
         .promise()
         .query(
@@ -59,6 +62,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
         );
     } else {
       // Ya existe, actualizamos la cantidad
+      console.log("✏️ Actualizando stock existente...");
       await pool
         .promise()
         .query(
@@ -68,6 +72,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
     }
 
     // Registramos en el historial
+    console.log("📝 Registrando en historial...");
     await pool
       .promise()
       .query(
@@ -75,6 +80,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
         [gustoIdNum, sucursalIdNum, cantidadNum]
       );
 
+    console.log("✅ Reposición registrada correctamente");
     res.json({ mensaje: "Reposición registrada correctamente ✅" });
   } catch (error) {
     console.error("❌ Error al registrar reposición:", error);
