@@ -5,48 +5,56 @@ const authenticate = require("../middlewares/authenticate");
 
 // 🔵 Registrar reposición (historial incluido)
 router.post("/reposicion", authenticate, async (req, res) => {
-  const { gusto_id, cantidad } = req.body;
-  const { sucursalId } = req.user;
+  const { gusto_id, cantidad, sucursal_id } = req.body;
+  console.log("➡️ req.user:", req.user);
 
-  console.log("👉 Datos recibidos en /reposicion:", {
-    gusto_id,
-    cantidad,
-    sucursalId,
-  });
+  let sucursalFinalId = req.user.sucursalId;
 
-  if (!gusto_id || !cantidad || !sucursalId) {
+  // Permitir a admin pasar sucursal_id desde el body
+  if (req.user.rol === "admin") {
+    if (!sucursal_id) {
+      return res.status(400).json({ error: "Falta el sucursal_id para admin" });
+    }
+    sucursalFinalId = sucursal_id;
+  }
+
+  if (!gusto_id || !cantidad || !sucursalFinalId) {
     return res.status(400).json({ error: "Faltan datos para la reposición" });
   }
 
   try {
+    // Chequear si ya existe ese stock
     const [stockExistente] = await pool
       .promise()
       .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
         gusto_id,
-        sucursalId,
+        sucursalFinalId,
       ]);
 
     if (stockExistente.length === 0) {
+      // No existe, lo creamos con precio 0 por defecto
       await pool
         .promise()
         .query(
           "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
-          [gusto_id, sucursalId, cantidad, 0]
+          [gusto_id, sucursalFinalId, cantidad, 0]
         );
     } else {
+      // Ya existe, actualizamos la cantidad
       await pool
         .promise()
         .query(
           "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-          [cantidad, gusto_id, sucursalId]
+          [cantidad, gusto_id, sucursalFinalId]
         );
     }
 
+    // Registramos en el historial
     await pool
       .promise()
       .query(
         "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, fecha) VALUES (?, ?, ?, NOW())",
-        [gusto_id, sucursalId, cantidad]
+        [gusto_id, sucursalFinalId, cantidad]
       );
 
     res.json({ mensaje: "Reposición registrada correctamente ✅" });
