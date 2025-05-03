@@ -101,41 +101,63 @@ router.get("/pagos-por-sucursal", authenticate, async (req, res) => {
 });
 // 🔵 Resumen financiero: facturado vs pagado (solo admin)
 router.get("/resumen-pagos", authenticate, async (req, res) => {
-  const { rol } = req.user;
-
-  if (rol !== "admin") {
-    return res
-      .status(403)
-      .json({ error: "Acceso denegado: sólo administradores" });
-  }
+  const { rol, sucursalId } = req.user;
 
   try {
-    const [resumen] = await pool.promise().query(`
+    let facturadoQuery = `
       SELECT 
-          s.id AS sucursal_id,
-          s.nombre AS sucursal,
-          COALESCE(v.total_facturado, 0) AS total_facturado,
-          COALESCE(p.total_pagado, 0) AS total_pagado,
-          (COALESCE(v.total_facturado, 0) - COALESCE(p.total_pagado, 0)) AS total_pendiente
-      FROM sucursales s
-      LEFT JOIN (
-          SELECT 
-              v.sucursal_id, 
-              SUM(v.cantidad * st.precio) AS total_facturado
-          FROM ventas v
-          JOIN stock st 
-              ON v.gusto_id = st.gusto_id AND v.sucursal_id = st.sucursal_id
-          GROUP BY v.sucursal_id
-      ) v ON s.id = v.sucursal_id
-      LEFT JOIN (
-          SELECT 
-              sucursal_id, 
-              SUM(monto) AS total_pagado
-          FROM pagos
-          GROUP BY sucursal_id
-      ) p ON s.id = p.sucursal_id
-      ORDER BY s.nombre
-    `);
+        v.sucursal_id, 
+        s.nombre AS sucursal,
+        SUM(v.cantidad * st.precio) AS total_facturado
+      FROM ventas v
+      JOIN gustos g ON v.gusto_id = g.id
+      JOIN sucursales s ON v.sucursal_id = s.id
+      JOIN stock st ON st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id
+    `;
+    let pagosQuery = `
+      SELECT 
+        sucursal_id,
+        SUM(monto) AS total_pagado
+      FROM pagos
+    `;
+    const params = [];
+    const pagosParams = [];
+
+    // ✅ Si NO es admin, filtramos solo su sucursal
+    if (rol !== "admin") {
+      facturadoQuery += " WHERE v.sucursal_id = ?";
+      pagosQuery += " WHERE sucursal_id = ?";
+      params.push(sucursalId);
+      pagosParams.push(sucursalId);
+    }
+
+    facturadoQuery += " GROUP BY v.sucursal_id, s.nombre";
+    pagosQuery += " GROUP BY sucursal_id";
+
+    const [facturadoPorSucursal] = await pool
+      .promise()
+      .query(facturadoQuery, params);
+
+    const [pagosPorSucursal] = await pool
+      .promise()
+      .query(pagosQuery, pagosParams);
+
+    const todasLasSucursales = new Set([
+      ...facturadoPorSucursal.map((f) => f.sucursal_id),
+      ...pagosPorSucursal.map((p) => p.sucursal_id),
+    ]);
+
+    const resumen = Array.from(todasLasSucursales).map((id) => {
+      const f = facturadoPorSucursal.find((x) => x.sucursal_id === id) || {};
+      const p = pagosPorSucursal.find((x) => x.sucursal_id === id) || {};
+      return {
+        sucursal_id: id,
+        sucursal: f.sucursal || "Desconocida",
+        total_facturado: f.total_facturado || 0,
+        total_pagado: p.total_pagado || 0,
+        total_pendiente: (f.total_facturado || 0) - (p.total_pagado || 0),
+      };
+    });
 
     res.json(resumen);
   } catch (error) {
