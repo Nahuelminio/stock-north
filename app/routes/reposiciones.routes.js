@@ -3,23 +3,25 @@ const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
 
-// 🔵 Registrar reposición (historial incluido)
+// 🔵 Registrar reposición (SOLO ADMIN)
 router.post("/reposicion", authenticate, async (req, res) => {
   const { gusto_id, cantidad, sucursal_id } = req.body;
+
   console.log("➡️ req.user:", req.user);
 
-  let sucursalFinalId = req.user.sucursalId;
-
-  // Permitir a admin pasar sucursal_id desde el body
-  if (req.user.rol === "admin") {
-    if (!sucursal_id) {
-      return res.status(400).json({ error: "Falta el sucursal_id para admin" });
-    }
-    sucursalFinalId = sucursal_id;
+  // 🔒 Solo permitir al admin
+  if (req.user.rol !== "admin") {
+    return res.status(403).json({
+      error: "Acceso denegado: solo admin puede registrar reposiciones",
+    });
   }
 
-  if (!gusto_id || !cantidad || !sucursalFinalId) {
-    return res.status(400).json({ error: "Faltan datos para la reposición" });
+  // ✅ Validamos que llegue sucursal_id desde el body
+  if (!gusto_id || !cantidad || !sucursal_id) {
+    return res.status(400).json({
+      error:
+        "Faltan datos para la reposición (gusto_id, cantidad, sucursal_id)",
+    });
   }
 
   try {
@@ -28,7 +30,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
       .promise()
       .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
         gusto_id,
-        sucursalFinalId,
+        sucursal_id,
       ]);
 
     if (stockExistente.length === 0) {
@@ -37,7 +39,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
         .promise()
         .query(
           "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
-          [gusto_id, sucursalFinalId, cantidad, 0]
+          [gusto_id, sucursal_id, cantidad, 0]
         );
     } else {
       // Ya existe, actualizamos la cantidad
@@ -45,7 +47,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
         .promise()
         .query(
           "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-          [cantidad, gusto_id, sucursalFinalId]
+          [cantidad, gusto_id, sucursal_id]
         );
     }
 
@@ -54,7 +56,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
       .promise()
       .query(
         "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, fecha) VALUES (?, ?, ?, NOW())",
-        [gusto_id, sucursalFinalId, cantidad]
+        [gusto_id, sucursal_id, cantidad]
       );
 
     res.json({ mensaje: "Reposición registrada correctamente ✅" });
