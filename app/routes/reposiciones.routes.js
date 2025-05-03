@@ -8,12 +8,17 @@ router.post("/reposicion", authenticate, async (req, res) => {
   const { gusto_id, cantidad } = req.body;
   const { sucursalId } = req.user;
 
-  if (!gusto_id || !cantidad) {
+  console.log("👉 Datos recibidos en /reposicion:", {
+    gusto_id,
+    cantidad,
+    sucursalId,
+  });
+
+  if (!gusto_id || !cantidad || !sucursalId) {
     return res.status(400).json({ error: "Faltan datos para la reposición" });
   }
 
   try {
-    // Chequear si ya existe ese stock
     const [stockExistente] = await pool
       .promise()
       .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
@@ -22,7 +27,6 @@ router.post("/reposicion", authenticate, async (req, res) => {
       ]);
 
     if (stockExistente.length === 0) {
-      // No existe, lo creamos con precio 0
       await pool
         .promise()
         .query(
@@ -30,7 +34,6 @@ router.post("/reposicion", authenticate, async (req, res) => {
           [gusto_id, sucursalId, cantidad, 0]
         );
     } else {
-      // Ya existe, actualizamos la cantidad
       await pool
         .promise()
         .query(
@@ -39,7 +42,6 @@ router.post("/reposicion", authenticate, async (req, res) => {
         );
     }
 
-    // Registramos en el historial
     await pool
       .promise()
       .query(
@@ -57,6 +59,12 @@ router.post("/reposicion", authenticate, async (req, res) => {
 // 🔵 Reposición rápida (sin historial)
 router.post("/reposicion-rapida", authenticate, async (req, res) => {
   const { gusto_id, sucursal_id, cantidad } = req.body;
+
+  console.log("👉 Datos recibidos en /reposicion-rapida:", {
+    gusto_id,
+    sucursal_id,
+    cantidad,
+  });
 
   if (!gusto_id || !sucursal_id || !cantidad) {
     return res
@@ -99,6 +107,12 @@ router.post("/reposicion-rapida", authenticate, async (req, res) => {
 router.post("/reposicion-por-codigo", authenticate, async (req, res) => {
   const { codigo_barra, sucursal_id, cantidad } = req.body;
 
+  console.log("👉 Datos recibidos en /reposicion-por-codigo:", {
+    codigo_barra,
+    sucursal_id,
+    cantidad,
+  });
+
   if (!codigo_barra || !sucursal_id || !cantidad) {
     return res.status(400).json({ error: "Faltan datos" });
   }
@@ -117,14 +131,14 @@ router.post("/reposicion-por-codigo", authenticate, async (req, res) => {
 
     const gusto_id = producto.gusto_id;
 
-    const [[stock]] = await pool
+    const [existencia] = await pool
       .promise()
       .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
         gusto_id,
         sucursal_id,
       ]);
 
-    if (!stock) {
+    if (existencia.length === 0) {
       await pool
         .promise()
         .query(
