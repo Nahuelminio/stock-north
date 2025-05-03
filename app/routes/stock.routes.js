@@ -32,36 +32,98 @@ router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
 });
 
 
-// 🔵 Registrar reposición (historial incluido)
 router.post("/reposicion", authenticate, async (req, res) => {
-  const { gusto_id, cantidad } = req.body;
-  const { sucursalId } = req.user; // ✅ Usar sucursal del token
+  const { gusto_id, cantidad, sucursal_id } = req.body;
 
-  if (!gusto_id || !cantidad) {
-    return res.status(400).json({ error: "Faltan datos para la reposición" });
+  console.log("➡️ Body recibido:", { gusto_id, cantidad, sucursal_id });
+  console.log("➡️ req.user:", req.user);
+
+  if (req.user.rol !== "admin") {
+    return res.status(403).json({
+      error: "Acceso denegado: solo admin puede registrar reposiciones",
+    });
+  }
+
+  if (!gusto_id || !cantidad || !sucursal_id) {
+    console.log("❌ ERROR: Faltan datos =>", {
+      gusto_id,
+      cantidad,
+      sucursal_id,
+    });
+    return res.status(400).json({
+      error:
+        "Faltan datos para la reposición (gusto_id, cantidad, sucursal_id son obligatorios)",
+    });
+  }
+
+  const gustoIdNum = parseInt(gusto_id, 10);
+  const cantidadNum = parseInt(cantidad, 10);
+  const sucursalIdNum = parseInt(sucursal_id, 10);
+
+  console.log("➡️ Convertidos a número:", {
+    gustoIdNum,
+    cantidadNum,
+    sucursalIdNum,
+  });
+
+  if (
+    isNaN(gustoIdNum) ||
+    isNaN(cantidadNum) ||
+    isNaN(sucursalIdNum) ||
+    !gustoIdNum ||
+    !cantidadNum ||
+    !sucursalIdNum
+  ) {
+    console.log("❌ ERROR: Datos inválidos después de convertir");
+    return res.status(400).json({
+      error: "Los datos enviados no son válidos (deben ser números válidos)",
+    });
   }
 
   try {
-    await pool
+    const [stockExistente] = await pool
       .promise()
-      .query(
-        "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-        [cantidad, gusto_id, sucursalId]
-      );
+      .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
+        gustoIdNum,
+        sucursalIdNum,
+      ]);
 
+    console.log("🔎 Stock existente:", stockExistente);
+
+    if (stockExistente.length === 0) {
+      console.log("🆕 Creando nuevo stock...");
+      await pool
+        .promise()
+        .query(
+          "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
+          [gustoIdNum, sucursalIdNum, cantidadNum, 0]
+        );
+    } else {
+      console.log("✏️ Actualizando stock existente...");
+      await pool
+        .promise()
+        .query(
+          "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
+          [cantidadNum, gustoIdNum, sucursalIdNum]
+        );
+    }
+
+    console.log("📝 Registrando en historial...");
     await pool
       .promise()
       .query(
         "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, fecha) VALUES (?, ?, ?, NOW())",
-        [gusto_id, sucursalId, cantidad]
+        [gustoIdNum, sucursalIdNum, cantidadNum]
       );
 
+    console.log("✅ Reposición registrada correctamente");
     res.json({ mensaje: "Reposición registrada correctamente ✅" });
   } catch (error) {
     console.error("❌ Error al registrar reposición:", error);
     res.status(500).json({ error: "Error al registrar la reposición" });
   }
 });
+
 
 // 🔵 Reposición rápida (sin historial)
 router.post("/reposicion-rapida", authenticate, async (req, res) => {

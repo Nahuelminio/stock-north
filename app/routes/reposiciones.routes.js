@@ -3,21 +3,18 @@ const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
 
-// 🔵 Registrar reposición (historial incluido)
 router.post("/reposicion", authenticate, async (req, res) => {
   const { gusto_id, cantidad, sucursal_id } = req.body;
 
   console.log("➡️ Body recibido:", { gusto_id, cantidad, sucursal_id });
   console.log("➡️ req.user:", req.user);
 
-  // 🔒 Solo permitir al admin
   if (req.user.rol !== "admin") {
     return res.status(403).json({
       error: "Acceso denegado: solo admin puede registrar reposiciones",
     });
   }
 
-  // ✅ Revisamos que llegue sucursal_id y demás
   if (!gusto_id || !cantidad || !sucursal_id) {
     console.log("❌ ERROR: Faltan datos =>", {
       gusto_id,
@@ -55,7 +52,6 @@ router.post("/reposicion", authenticate, async (req, res) => {
   }
 
   try {
-    // Chequear si ya existe ese stock
     const [stockExistente] = await pool
       .promise()
       .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
@@ -98,6 +94,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al registrar la reposición" });
   }
 });
+
 
 // 🔵 Reposición rápida (sin historial)
 router.post("/reposicion-rapida", authenticate, async (req, res) => {
