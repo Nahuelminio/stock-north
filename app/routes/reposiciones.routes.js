@@ -3,11 +3,12 @@ const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
 
-// 🔵 Registrar reposición (SOLO ADMIN)
+// 🔵 Registrar reposición (historial incluido)
 router.post("/reposicion", authenticate, async (req, res) => {
   const { gusto_id, cantidad, sucursal_id } = req.body;
 
   console.log("➡️ req.user:", req.user);
+  console.log("📦 Body recibido:", req.body);
 
   // 🔒 Solo permitir al admin
   if (req.user.rol !== "admin") {
@@ -16,21 +17,36 @@ router.post("/reposicion", authenticate, async (req, res) => {
     });
   }
 
-  // ✅ Validamos que llegue sucursal_id desde el body
-  if (!gusto_id || !cantidad || !sucursal_id) {
+  // ✅ Validamos que llegue sucursal_id, gusto_id y cantidad, todos numéricos y no vacíos
+  if (
+    gusto_id === undefined ||
+    cantidad === undefined ||
+    sucursal_id === undefined ||
+    gusto_id === "" ||
+    cantidad === "" ||
+    sucursal_id === "" ||
+    isNaN(gusto_id) ||
+    isNaN(cantidad) ||
+    isNaN(sucursal_id)
+  ) {
     return res.status(400).json({
       error:
-        "Faltan datos para la reposición (gusto_id, cantidad, sucursal_id)",
+        "Faltan datos válidos: gusto_id, cantidad y sucursal_id deben ser numéricos y no vacíos",
     });
   }
+
+  // 🔢 Convertimos a números seguros
+  const gustoIdNum = parseInt(gusto_id);
+  const cantidadNum = parseInt(cantidad);
+  const sucursalIdNum = parseInt(sucursal_id);
 
   try {
     // Chequear si ya existe ese stock
     const [stockExistente] = await pool
       .promise()
       .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
-        gusto_id,
-        sucursal_id,
+        gustoIdNum,
+        sucursalIdNum,
       ]);
 
     if (stockExistente.length === 0) {
@@ -39,7 +55,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
         .promise()
         .query(
           "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
-          [gusto_id, sucursal_id, cantidad, 0]
+          [gustoIdNum, sucursalIdNum, cantidadNum, 0]
         );
     } else {
       // Ya existe, actualizamos la cantidad
@@ -47,7 +63,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
         .promise()
         .query(
           "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-          [cantidad, gusto_id, sucursal_id]
+          [cantidadNum, gustoIdNum, sucursalIdNum]
         );
     }
 
@@ -56,7 +72,7 @@ router.post("/reposicion", authenticate, async (req, res) => {
       .promise()
       .query(
         "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, fecha) VALUES (?, ?, ?, NOW())",
-        [gusto_id, sucursal_id, cantidad]
+        [gustoIdNum, sucursalIdNum, cantidadNum]
       );
 
     res.json({ mensaje: "Reposición registrada correctamente ✅" });
