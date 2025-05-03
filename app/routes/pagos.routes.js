@@ -144,6 +144,49 @@ router.get("/resumen-pagos", authenticate, async (req, res) => {
   }
 });
 
+// 🔵 Resumen financiero solo para SUCURSAL logueada
+router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
+  const { sucursalId } = req.user;
+
+  try {
+    const [resultado] = await pool.promise().query(`
+      SELECT
+        s.id AS sucursal_id,
+        s.nombre AS sucursal,
+        COALESCE(f.total_facturado, 0) AS total_facturado,
+        COALESCE(p.total_pagado, 0) AS total_pagado,
+        (COALESCE(f.total_facturado, 0) - COALESCE(p.total_pagado, 0)) AS deuda
+      FROM sucursales s
+      LEFT JOIN (
+        SELECT 
+          v.sucursal_id, 
+          SUM(v.cantidad * g.precio) AS total_facturado
+        FROM ventas v
+        JOIN gustos g ON v.gusto_id = g.id
+        WHERE v.sucursal_id = ?
+        GROUP BY v.sucursal_id
+      ) f ON s.id = f.sucursal_id
+      LEFT JOIN (
+        SELECT 
+          sucursal_id,
+          SUM(monto) AS total_pagado
+        FROM pagos
+        WHERE sucursal_id = ?
+        GROUP BY sucursal_id
+      ) p ON s.id = p.sucursal_id
+      WHERE s.id = ?
+    `, [sucursalId, sucursalId, sucursalId]);
+
+    if (resultado.length === 0) {
+      return res.status(404).json({ error: "Sucursal no encontrada" });
+    }
+
+    res.json(resultado[0]);  // Devolvemos solo un objeto (esa sucursal)
+  } catch (error) {
+    console.error("❌ Error al obtener resumen financiero de sucursal:", error);
+    res.status(500).json({ error: "Error al obtener resumen financiero" });
+  }
+});
 
 
 module.exports = router;
