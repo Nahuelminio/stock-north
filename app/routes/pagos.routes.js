@@ -25,7 +25,6 @@ router.post("/registrar-pago", authenticate, async (req, res) => {
   }
 });
 
-
 // 🔵 Historial de pagos
 router.get("/historial-pagos", authenticate, async (req, res) => {
   const { fecha_inicio, fecha_fin } = req.query;
@@ -72,6 +71,8 @@ router.get("/historial-pagos", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener historial de pagos" });
   }
 });
+
+
 
 // 🔵 Total de pagos por sucursal (solo para admin)
 router.get("/pagos-por-sucursal", authenticate, async (req, res) => {
@@ -149,7 +150,8 @@ router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
   const { sucursalId } = req.user;
 
   try {
-    const [resultado] = await pool.promise().query(`
+    const [resultado] = await pool.promise().query(
+      `
       SELECT
         s.id AS sucursal_id,
         s.nombre AS sucursal,
@@ -176,7 +178,9 @@ router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
         GROUP BY sucursal_id
       ) p ON s.id = p.sucursal_id
       WHERE s.id = ?
-    `, [sucursalId, sucursalId, sucursalId]);
+    `,
+      [sucursalId, sucursalId, sucursalId]
+    );
 
     if (resultado.length === 0) {
       return res.status(404).json({ error: "Sucursal no encontrada" });
@@ -188,7 +192,5 @@ router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener resumen financiero" });
   }
 });
-
-
 
 module.exports = router;

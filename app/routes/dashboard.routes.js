@@ -31,5 +31,28 @@ router.get("/dashboard", async (req, res) => {
     res.status(500).json({ error: "Error al obtener dashboard" });
   }
 });
+router.get("/resumen-ganancias", async (req, res) => {
+  try {
+    const [rows] = await pool.promise().query(`
+    SELECT 
+    s.nombre AS sucursal,
+    SUM(v.cantidad * st.precio) AS total_ventas,
+    SUM(v.cantidad * p.precio_costo) AS costo_total,
+    SUM((v.cantidad * st.precio) - (v.cantidad * p.precio_costo)) AS ganancia
+FROM ventas v
+JOIN sucursales s ON v.sucursal_id = s.id
+JOIN gustos g ON v.gusto_id = g.id
+JOIN productos p ON g.producto_id = p.id
+JOIN stock st ON v.gusto_id = st.gusto_id AND v.sucursal_id = st.sucursal_id
+GROUP BY s.id;
+
+    `);
+
+    res.json(rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error al obtener resumen de ganancias" });
+  }
+});
 
 module.exports = router;
