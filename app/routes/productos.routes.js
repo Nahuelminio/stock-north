@@ -301,5 +301,35 @@ router.get("/verificar-codigo/:codigo", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al verificar el código de barras" });
   }
 });
+// 🔵 Verificar si el código de barras ya existe en una sucursal (por query string)
+router.get("/verificar-codigo", authenticate, async (req, res) => {
+  const { codigo_barra, sucursal_id, gusto_id } = req.query;
+
+  if (!codigo_barra || !sucursal_id) {
+    return res.status(400).json({ error: "Faltan parámetros requeridos" });
+  }
+
+  try {
+    let query = `
+      SELECT g.id FROM gustos g
+      JOIN stock st ON st.gusto_id = g.id
+      WHERE g.codigo_barra = ? AND st.sucursal_id = ?
+    `;
+    const params = [codigo_barra, sucursal_id];
+
+    if (gusto_id) {
+      query += " AND g.id != ?";
+      params.push(gusto_id);
+    }
+
+    const [rows] = await pool.promise().query(query, params);
+
+    res.json({ existe: rows.length > 0 });
+  } catch (error) {
+    console.error("❌ Error al verificar código:", error);
+    res.status(500).json({ error: "Error interno" });
+  }
+});
+
 
 module.exports = router;
