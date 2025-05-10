@@ -199,11 +199,14 @@ router.post(
           await pool.promise().query(
             `UPDATE gustos 
              SET codigo_barra = ? 
-             WHERE producto_id = ? AND nombre = ? AND (codigo_barra IS NULL OR codigo_barra != ?)`,
+             WHERE producto_id = ? AND nombre = ? 
+               AND id != ? 
+               AND (codigo_barra IS NULL OR codigo_barra != ?)`,
             [
               codigo_barra,
               gustoInfo.producto_id,
               gustoInfo.nombre,
+              gusto_id,
               codigo_barra,
             ]
           );
