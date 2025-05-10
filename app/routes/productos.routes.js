@@ -135,7 +135,6 @@ router.delete(
 );
 
 // 🔵 Editar producto (solo admin)
-// 🔵 Editar producto (solo admin)
 router.post(
   "/editar/:gusto_id",
   authenticate,
@@ -144,7 +143,24 @@ router.post(
     const { stock, sucursal_id, nuevoGusto, precio, codigo_barra } = req.body;
     const { gusto_id } = req.params;
 
+    console.log("📥 Body recibido en edición:", req.body);
+    console.log("🆔 gusto_id recibido:", gusto_id);
+
+    // Validación básica
+    if (
+      stock === undefined ||
+      precio === undefined ||
+      !sucursal_id ||
+      !nuevoGusto
+    ) {
+      return res.status(400).json({
+        error:
+          "Faltan datos obligatorios (stock, precio, sucursal_id, nuevoGusto)",
+      });
+    }
+
     try {
+      // Verificación de código de barras
       if (codigo_barra) {
         const [existe] = await pool.promise().query(
           `SELECT g.id FROM gustos g
@@ -159,15 +175,16 @@ router.post(
         }
       }
 
-      if (nuevoGusto || codigo_barra) {
-        await pool
-          .promise()
-          .query(
-            "UPDATE gustos SET nombre = ?, codigo_barra = ? WHERE id = ?",
-            [nuevoGusto, codigo_barra || null, gusto_id]
-          );
-      }
+      // Actualización del gusto
+      await pool
+        .promise()
+        .query("UPDATE gustos SET nombre = ?, codigo_barra = ? WHERE id = ?", [
+          nuevoGusto,
+          codigo_barra || null,
+          gusto_id,
+        ]);
 
+      // Actualización del stock
       await pool
         .promise()
         .query(
@@ -175,7 +192,7 @@ router.post(
           [stock, precio, gusto_id, sucursal_id]
         );
 
-      // 🔁 Actualizar código para todos los gustos con mismo producto + gusto
+      // Sincronización del código de barras en gustos iguales del mismo producto
       if (codigo_barra) {
         const [[gustoInfo]] = await pool
           .promise()
@@ -184,20 +201,23 @@ router.post(
           ]);
 
         if (gustoInfo) {
-          await pool.promise().query(
-            "UPDATE gustos SET codigo_barra = ? WHERE producto_id = ? AND nombre = ?",
-            [codigo_barra, gustoInfo.producto_id, gustoInfo.nombre]
-          );
+          await pool
+            .promise()
+            .query(
+              "UPDATE gustos SET codigo_barra = ? WHERE producto_id = ? AND nombre = ?",
+              [codigo_barra, gustoInfo.producto_id, gustoInfo.nombre]
+            );
         }
       }
 
-      res.json({ mensaje: "Producto actualizado correctamente" });
+      res.json({ mensaje: "Producto actualizado correctamente ✅" });
     } catch (error) {
-      console.error("❌ Error al editar producto:", error);
+      console.error("❌ Error al editar producto:", error.message, error.stack);
       res.status(500).json({ error: "Error al editar producto" });
     }
   }
 );
+
 
 // 🔵 Ver productos disponibles por sucursal
 router.get("/disponibles", authenticate, async (req, res) => {
