@@ -97,12 +97,21 @@ router.post("/agregar", authenticate, authorizeAdmin, async (req, res) => {
         [gustoInsert.insertId, sucursal_id, stock, precio]
       );
 
+    // 🔁 Actualizar código para todos los gustos con mismo producto + gusto
+    if (codigo_barra) {
+      await pool.promise().query(
+        "UPDATE gustos SET codigo_barra = ? WHERE producto_id = ? AND nombre = ?",
+        [codigo_barra, producto_id, gusto]
+      );
+    }
+
     res.status(200).json({ mensaje: "Producto agregado correctamente" });
   } catch (error) {
     console.error("❌ Error al agregar producto:", error);
     res.status(500).json({ error: "No se pudo agregar producto" });
   }
 });
+
 // 🔵 Eliminar gusto (solo admin)
 router.delete(
   "/eliminar-gusto/:gusto_id",
@@ -125,6 +134,7 @@ router.delete(
   }
 );
 
+// 🔵 Editar producto (solo admin)
 // 🔵 Editar producto (solo admin)
 router.post(
   "/editar/:gusto_id",
@@ -164,6 +174,22 @@ router.post(
           "UPDATE stock SET cantidad = ?, precio = ? WHERE gusto_id = ? AND sucursal_id = ?",
           [stock, precio, gusto_id, sucursal_id]
         );
+
+      // 🔁 Actualizar código para todos los gustos con mismo producto + gusto
+      if (codigo_barra) {
+        const [[gustoInfo]] = await pool
+          .promise()
+          .query("SELECT producto_id, nombre FROM gustos WHERE id = ?", [
+            gusto_id,
+          ]);
+
+        if (gustoInfo) {
+          await pool.promise().query(
+            "UPDATE gustos SET codigo_barra = ? WHERE producto_id = ? AND nombre = ?",
+            [codigo_barra, gustoInfo.producto_id, gustoInfo.nombre]
+          );
+        }
+      }
 
       res.json({ mensaje: "Producto actualizado correctamente" });
     } catch (error) {
@@ -310,6 +336,12 @@ router.get("/verificar-codigo", authenticate, async (req, res) => {
   }
 
   try {
+    console.log("🔎 Verificando código:", {
+      codigo_barra,
+      sucursal_id,
+      gusto_id,
+    });
+
     let query = `
       SELECT g.id FROM gustos g
       JOIN stock st ON st.gusto_id = g.id
@@ -326,10 +358,11 @@ router.get("/verificar-codigo", authenticate, async (req, res) => {
 
     res.json({ existe: rows.length > 0 });
   } catch (error) {
-    console.error("❌ Error al verificar código:", error);
-    res.status(500).json({ error: "Error interno" });
+    console.error("❌ Error al verificar código en backend:", error);
+    res.status(500).json({ error: "Error interno del servidor" });
   }
 });
+
 
 
 module.exports = router;

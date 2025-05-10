@@ -2,12 +2,11 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
+const { upsertStock } = require("../controllers/stockHelpers");
 
+// 🔵 Reposición (con historial)
 router.post("/reposicion", authenticate, async (req, res) => {
   const { gusto_id, cantidad, sucursal_id } = req.body;
-
-  console.log("➡️ Body recibido:", { gusto_id, cantidad, sucursal_id });
-  console.log("➡️ req.user:", req.user);
 
   if (req.user.rol !== "admin") {
     return res.status(403).json({
@@ -16,78 +15,26 @@ router.post("/reposicion", authenticate, async (req, res) => {
   }
 
   if (!gusto_id || !cantidad || !sucursal_id) {
-    console.log("❌ ERROR: Faltan datos =>", {
-      gusto_id,
-      cantidad,
-      sucursal_id,
-    });
     return res.status(400).json({
       error:
         "Faltan datos para la reposición (gusto_id, cantidad, sucursal_id son obligatorios)",
     });
   }
 
-  const gustoIdNum = parseInt(gusto_id, 10);
-  const cantidadNum = parseInt(cantidad, 10);
-  const sucursalIdNum = parseInt(sucursal_id, 10);
-
-  console.log("➡️ Convertidos a número:", {
-    gustoIdNum,
-    cantidadNum,
-    sucursalIdNum,
-  });
-
-  if (
-    isNaN(gustoIdNum) ||
-    isNaN(cantidadNum) ||
-    isNaN(sucursalIdNum) ||
-    !gustoIdNum ||
-    !cantidadNum ||
-    !sucursalIdNum
-  ) {
-    console.log("❌ ERROR: Datos inválidos después de convertir");
-    return res.status(400).json({
-      error: "Los datos enviados no son válidos (deben ser números válidos)",
-    });
-  }
-
   try {
-    const [stockExistente] = await pool
-      .promise()
-      .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
-        gustoIdNum,
-        sucursalIdNum,
-      ]);
+    await upsertStock(
+      parseInt(gusto_id),
+      parseInt(sucursal_id),
+      parseInt(cantidad)
+    );
 
-    console.log("🔎 Stock existente:", stockExistente);
-
-    if (stockExistente.length === 0) {
-      console.log("🆕 Creando nuevo stock...");
-      await pool
-        .promise()
-        .query(
-          "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
-          [gustoIdNum, sucursalIdNum, cantidadNum, 0]
-        );
-    } else {
-      console.log("✏️ Actualizando stock existente...");
-      await pool
-        .promise()
-        .query(
-          "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-          [cantidadNum, gustoIdNum, sucursalIdNum]
-        );
-    }
-
-    console.log("📝 Registrando en historial...");
     await pool
       .promise()
       .query(
         "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, fecha) VALUES (?, ?, ?, NOW())",
-        [gustoIdNum, sucursalIdNum, cantidadNum]
+        [gusto_id, sucursal_id, cantidad]
       );
 
-    console.log("✅ Reposición registrada correctamente");
     res.json({ mensaje: "Reposición registrada correctamente ✅" });
   } catch (error) {
     console.error("❌ Error al registrar reposición:", error);
@@ -95,16 +42,9 @@ router.post("/reposicion", authenticate, async (req, res) => {
   }
 });
 
-
 // 🔵 Reposición rápida (sin historial)
 router.post("/reposicion-rapida", authenticate, async (req, res) => {
   const { gusto_id, sucursal_id, cantidad } = req.body;
-
-  console.log("👉 Datos recibidos en /reposicion-rapida:", {
-    gusto_id,
-    sucursal_id,
-    cantidad,
-  });
 
   if (!gusto_id || !sucursal_id || !cantidad) {
     return res
@@ -113,29 +53,11 @@ router.post("/reposicion-rapida", authenticate, async (req, res) => {
   }
 
   try {
-    const [existencia] = await pool
-      .promise()
-      .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
-        gusto_id,
-        sucursal_id,
-      ]);
-
-    if (existencia.length === 0) {
-      await pool
-        .promise()
-        .query(
-          "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
-          [gusto_id, sucursal_id, cantidad, 0]
-        );
-    } else {
-      await pool
-        .promise()
-        .query(
-          "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-          [cantidad, gusto_id, sucursal_id]
-        );
-    }
-
+    await upsertStock(
+      parseInt(gusto_id),
+      parseInt(sucursal_id),
+      parseInt(cantidad)
+    );
     res.json({ mensaje: "✅ Reposición rápida realizada" });
   } catch (error) {
     console.error("❌ Error en reposición rápida:", error);
@@ -146,12 +68,6 @@ router.post("/reposicion-rapida", authenticate, async (req, res) => {
 // 🔵 Reposición por código de barras
 router.post("/reposicion-por-codigo", authenticate, async (req, res) => {
   const { codigo_barra, sucursal_id, cantidad } = req.body;
-
-  console.log("👉 Datos recibidos en /reposicion-por-codigo:", {
-    codigo_barra,
-    sucursal_id,
-    cantidad,
-  });
 
   if (!codigo_barra || !sucursal_id || !cantidad) {
     return res.status(400).json({ error: "Faltan datos" });
@@ -171,28 +87,7 @@ router.post("/reposicion-por-codigo", authenticate, async (req, res) => {
 
     const gusto_id = producto.gusto_id;
 
-    const [existencia] = await pool
-      .promise()
-      .query("SELECT * FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [
-        gusto_id,
-        sucursal_id,
-      ]);
-
-    if (existencia.length === 0) {
-      await pool
-        .promise()
-        .query(
-          "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
-          [gusto_id, sucursal_id, cantidad, 0]
-        );
-    } else {
-      await pool
-        .promise()
-        .query(
-          "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-          [cantidad, gusto_id, sucursal_id]
-        );
-    }
+    await upsertStock(gusto_id, parseInt(sucursal_id), parseInt(cantidad));
 
     await pool
       .promise()
@@ -208,64 +103,63 @@ router.post("/reposicion-por-codigo", authenticate, async (req, res) => {
   }
 });
 
-// 🔵 Historial de reposiciones con filtros
-router.get("/historial-reposiciones", authenticate, async (req, res) => {
-  const { producto, gusto, sucursal_id, fecha_inicio, fecha_fin } = req.query;
+// 🔵 Listar gustos y stock por producto
+router.get(
+  "/gustos/por-producto/:producto_id",
+  authenticate,
+  async (req, res) => {
+    const { producto_id } = req.params;
+
+    try {
+      const [rows] = await pool.promise().query(
+        `SELECT 
+        g.id AS gusto_id,
+        g.nombre AS gusto,
+        g.codigo_barra,
+        s.id AS sucursal_id,
+        s.nombre AS sucursal,
+        st.cantidad,
+        st.precio
+      FROM gustos g
+      JOIN stock st ON st.gusto_id = g.id
+      JOIN sucursales s ON s.id = st.sucursal_id
+      WHERE g.producto_id = ?
+      ORDER BY g.nombre, s.nombre`,
+        [producto_id]
+      );
+
+      res.json(rows);
+    } catch (error) {
+      console.error("❌ Error al obtener gustos por producto:", error);
+      res.status(500).json({ error: "Error al obtener gustos por producto" });
+    }
+  }
+);
+
+// 🔵 Actualizar precio y stock por gusto (masivo por producto)
+router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
+  const { actualizaciones } = req.body;
+
+  if (!Array.isArray(actualizaciones)) {
+    return res
+      .status(400)
+      .json({ error: "Formato inválido. Se espera un array." });
+  }
 
   try {
-    let query = `
-      SELECT 
-        r.id,
-        r.fecha,
-        s.nombre AS sucursal,
-        p.nombre AS producto,
-        g.nombre AS gusto,
-        r.cantidad_repuesta AS cantidad
-      FROM reposiciones r
-      JOIN gustos g ON r.gusto_id = g.id
-      JOIN productos p ON g.producto_id = p.id
-      JOIN sucursales s ON r.sucursal_id = s.id
-      WHERE 1 = 1
-    `;
-
-    const params = [];
-
-    if (sucursal_id) {
-      query += " AND s.id = ?";
-      params.push(sucursal_id);
+    for (const item of actualizaciones) {
+      const { gusto_id, sucursal_id, cantidad, precio } = item;
+      await pool
+        .promise()
+        .query(
+          "UPDATE stock SET cantidad = ?, precio = ? WHERE gusto_id = ? AND sucursal_id = ?",
+          [cantidad, precio, gusto_id, sucursal_id]
+        );
     }
 
-    if (producto) {
-      query += " AND p.nombre LIKE ?";
-      params.push(`%${producto}%`);
-    }
-
-    if (gusto) {
-      query += " AND g.nombre LIKE ?";
-      params.push(`%${gusto}%`);
-    }
-
-    if (fecha_inicio && fecha_fin) {
-      query += " AND DATE(r.fecha) BETWEEN ? AND ?";
-      params.push(fecha_inicio, fecha_fin);
-    } else if (fecha_inicio) {
-      query += " AND DATE(r.fecha) >= ?";
-      params.push(fecha_inicio);
-    } else if (fecha_fin) {
-      query += " AND DATE(r.fecha) <= ?";
-      params.push(fecha_fin);
-    }
-
-    query += " ORDER BY r.fecha DESC";
-
-    const [results] = await pool.promise().query(query, params);
-    res.json(results);
+    res.json({ mensaje: "Actualización masiva realizada con éxito ✅" });
   } catch (error) {
-    console.error("❌ Error al obtener historial de reposiciones:", error);
-    res
-      .status(500)
-      .json({ error: "Error al obtener historial de reposiciones" });
+    console.error("❌ Error en actualización masiva:", error);
+    res.status(500).json({ error: "Error al actualizar stock/precio" });
   }
 });
-
-module.exports = router;
