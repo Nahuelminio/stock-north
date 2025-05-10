@@ -146,7 +146,6 @@ router.post(
     console.log("📥 Body recibido en edición:", req.body);
     console.log("🆔 gusto_id recibido:", gusto_id);
 
-    // Validación básica
     if (
       stock === undefined ||
       precio === undefined ||
@@ -160,7 +159,6 @@ router.post(
     }
 
     try {
-      // Verificación de código de barras
       if (codigo_barra) {
         const [existe] = await pool.promise().query(
           `SELECT g.id FROM gustos g
@@ -175,7 +173,6 @@ router.post(
         }
       }
 
-      // Actualización del gusto
       await pool
         .promise()
         .query("UPDATE gustos SET nombre = ?, codigo_barra = ? WHERE id = ?", [
@@ -184,7 +181,6 @@ router.post(
           gusto_id,
         ]);
 
-      // Actualización del stock
       await pool
         .promise()
         .query(
@@ -192,7 +188,6 @@ router.post(
           [stock, precio, gusto_id, sucursal_id]
         );
 
-      // Sincronización del código de barras en gustos iguales del mismo producto
       if (codigo_barra) {
         const [[gustoInfo]] = await pool
           .promise()
@@ -201,12 +196,17 @@ router.post(
           ]);
 
         if (gustoInfo) {
-          await pool
-            .promise()
-            .query(
-              "UPDATE gustos SET codigo_barra = ? WHERE producto_id = ? AND nombre = ?",
-              [codigo_barra, gustoInfo.producto_id, gustoInfo.nombre]
-            );
+          await pool.promise().query(
+            `UPDATE gustos 
+             SET codigo_barra = ? 
+             WHERE producto_id = ? AND nombre = ? AND (codigo_barra IS NULL OR codigo_barra != ?)`,
+            [
+              codigo_barra,
+              gustoInfo.producto_id,
+              gustoInfo.nombre,
+              codigo_barra,
+            ]
+          );
         }
       }
 
