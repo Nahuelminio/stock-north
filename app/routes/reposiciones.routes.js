@@ -149,9 +149,9 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
   console.log("📦 Datos recibidos en actualización masiva:", actualizaciones);
 
   try {
-    const procesados = new Set();
+    const clavesUnicas = new Set();
 
-    // 🔁 PASO 1: limpiar códigos duplicados globales una sola vez por producto+gusto+codigo
+    // 🔁 1. Juntar todas las claves únicas que se van a usar
     for (const item of actualizaciones) {
       const { gusto_id, codigo_barra } = item;
 
@@ -163,32 +163,36 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
           ]);
 
         if (gustoInfo) {
-          const clave = `${gustoInfo.producto_id}-${gustoInfo.nombre}-${codigo_barra}`;
-          if (procesados.has(clave)) continue;
-          procesados.add(clave);
-
-          const [duplicados] = await pool.promise().query(
-            `SELECT id FROM gustos 
-             WHERE producto_id = ? AND nombre = ? AND codigo_barra = ? AND id != ?`,
-            [gustoInfo.producto_id, gustoInfo.nombre, codigo_barra, gusto_id]
-          );
-
-          const idsDuplicados = duplicados.map((d) => d.id);
-
-          if (idsDuplicados.length > 0) {
-            await pool
-              .promise()
-              .query(
-                `UPDATE gustos SET codigo_barra = NULL WHERE id IN (${idsDuplicados.join(
-                  ","
-                )})`
-              );
-          }
+          const clave = `${gustoInfo.producto_id}|||${gustoInfo.nombre}|||${codigo_barra}`;
+          clavesUnicas.add(clave);
         }
       }
     }
 
-    // 🔁 PASO 2: aplicar updates
+    // 🔁 2. Limpiar duplicados reales en toda la tabla antes de actualizar
+    for (const clave of clavesUnicas) {
+      const [producto_id, nombre, codigo] = clave.split("|||");
+      const [duplicados] = await pool.promise().query(
+        `SELECT id FROM gustos 
+         WHERE producto_id = ? AND nombre = ? AND codigo_barra = ?`,
+        [producto_id, nombre, codigo]
+      );
+
+      if (duplicados.length > 1) {
+        const ids = duplicados.map((d) => d.id);
+        // preservamos el primero y limpiamos el resto
+        const idsAEliminar = ids.slice(1);
+        await pool
+          .promise()
+          .query(
+            `UPDATE gustos SET codigo_barra = NULL WHERE id IN (${idsAEliminar.join(
+              ","
+            )})`
+          );
+      }
+    }
+
+    // 🔁 3. Aplicar updates uno por uno
     for (const item of actualizaciones) {
       const { gusto_id, sucursal_id, cantidad, precio, codigo_barra } = item;
 
@@ -245,6 +249,7 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al actualizar stock/precio" });
   }
 });
+
 
 
 
