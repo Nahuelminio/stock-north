@@ -150,7 +150,7 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
     for (const item of actualizaciones) {
       const { gusto_id, sucursal_id, cantidad, precio, codigo_barra } = item;
 
-      if (codigo_barra) {
+      if (codigo_barra && codigo_barra.trim() !== "") {
         // Validar duplicado solo dentro de la misma sucursal
         const [repetido] = await pool.promise().query(
           `SELECT g.id FROM gustos g
@@ -200,7 +200,6 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al actualizar stock/precio" });
   }
 });
-
 
 
 module.exports = router;
