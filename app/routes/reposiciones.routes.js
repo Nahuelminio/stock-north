@@ -152,22 +152,8 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
     for (const item of actualizaciones) {
       const { gusto_id, sucursal_id, cantidad, precio, codigo_barra } = item;
 
+      // ✅ Solo actualizar si se especificó un código válido
       if (codigo_barra && codigo_barra.trim() !== "") {
-        // Verificar que no se repita en la misma sucursal
-        const [repetido] = await pool.promise().query(
-          `SELECT g.id FROM gustos g
-           JOIN stock st ON st.gusto_id = g.id
-           WHERE g.codigo_barra = ? AND st.sucursal_id = ? AND g.id != ?`,
-          [codigo_barra, sucursal_id, gusto_id]
-        );
-
-        if (repetido.length > 0) {
-          return res.status(400).json({
-            error: `El código de barras ${codigo_barra} ya está usado en esta sucursal`,
-          });
-        }
-
-        // Actualizar código directamente en este gusto
         await pool
           .promise()
           .query(`UPDATE gustos SET codigo_barra = ? WHERE id = ?`, [
@@ -191,6 +177,7 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al actualizar stock/precio" });
   }
 });
+
 
 
 
