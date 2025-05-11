@@ -149,54 +149,11 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
   console.log("📦 Datos recibidos en actualización masiva:", actualizaciones);
 
   try {
-    const clavesUnicas = new Set();
-
-    // 🔁 1. Juntar todas las claves únicas que se van a usar
-    for (const item of actualizaciones) {
-      const { gusto_id, codigo_barra } = item;
-
-      if (codigo_barra && codigo_barra.trim() !== "") {
-        const [[gustoInfo]] = await pool
-          .promise()
-          .query("SELECT producto_id, nombre FROM gustos WHERE id = ?", [
-            gusto_id,
-          ]);
-
-        if (gustoInfo) {
-          const clave = `${gustoInfo.producto_id}|||${gustoInfo.nombre}|||${codigo_barra}`;
-          clavesUnicas.add(clave);
-        }
-      }
-    }
-
-    // 🔁 2. Limpiar duplicados reales en toda la tabla antes de actualizar
-    for (const clave of clavesUnicas) {
-      const [producto_id, nombre, codigo] = clave.split("|||");
-      const [duplicados] = await pool.promise().query(
-        `SELECT id FROM gustos 
-         WHERE producto_id = ? AND nombre = ? AND codigo_barra = ?`,
-        [producto_id, nombre, codigo]
-      );
-
-      if (duplicados.length > 1) {
-        const ids = duplicados.map((d) => d.id);
-        // preservamos el primero y limpiamos el resto
-        const idsAEliminar = ids.slice(1);
-        await pool
-          .promise()
-          .query(
-            `UPDATE gustos SET codigo_barra = NULL WHERE id IN (${idsAEliminar.join(
-              ","
-            )})`
-          );
-      }
-    }
-
-    // 🔁 3. Aplicar updates uno por uno
     for (const item of actualizaciones) {
       const { gusto_id, sucursal_id, cantidad, precio, codigo_barra } = item;
 
       if (codigo_barra && codigo_barra.trim() !== "") {
+        // Verificar que no se repita en la misma sucursal
         const [repetido] = await pool.promise().query(
           `SELECT g.id FROM gustos g
            JOIN stock st ON st.gusto_id = g.id
@@ -210,28 +167,13 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
           });
         }
 
-        const [[gustoInfo]] = await pool
+        // Actualizar código directamente en este gusto
+        await pool
           .promise()
-          .query("SELECT producto_id, nombre FROM gustos WHERE id = ?", [
+          .query(`UPDATE gustos SET codigo_barra = ? WHERE id = ?`, [
+            codigo_barra,
             gusto_id,
           ]);
-
-        if (gustoInfo) {
-          const [gustos] = await pool.promise().query(
-            `SELECT id FROM gustos 
-             WHERE producto_id = ? AND nombre = ? AND (codigo_barra IS NULL OR codigo_barra != ?)`,
-            [gustoInfo.producto_id, gustoInfo.nombre, codigo_barra]
-          );
-
-          for (const fila of gustos) {
-            await pool
-              .promise()
-              .query(`UPDATE gustos SET codigo_barra = ? WHERE id = ?`, [
-                codigo_barra,
-                fila.id,
-              ]);
-          }
-        }
       }
 
       await pool
@@ -242,14 +184,13 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
         );
     }
 
-    res.json({ mensaje: "Actualización masiva realizada con éxito ✅" });
+    res.json({ mensaje: "Actualización realizada correctamente ✅" });
   } catch (error) {
     console.error("❌ Error en actualización masiva:", error.message);
     console.error(error.stack);
     res.status(500).json({ error: "Error al actualizar stock/precio" });
   }
 });
-
 
 
 
