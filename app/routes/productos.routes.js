@@ -196,20 +196,26 @@ router.post(
           ]);
 
         if (gustoInfo) {
-          await pool.promise().query(
-            `UPDATE gustos 
-             SET codigo_barra = ? 
-             WHERE producto_id = ? AND nombre = ? 
-               AND id != ? 
-               AND (codigo_barra IS NULL OR codigo_barra != ?)`,
-            [
+          // Verificar si ya existe en toda la tabla ese código
+          const [codigoExistenteGlobal] = await pool
+            .promise()
+            .query("SELECT id FROM gustos WHERE codigo_barra = ? AND id != ?", [
               codigo_barra,
-              gustoInfo.producto_id,
-              gustoInfo.nombre,
               gusto_id,
-              codigo_barra,
-            ]
-          );
+            ]);
+
+          if (codigoExistenteGlobal.length > 0) {
+            return res.status(400).json({
+              error: "Este código de barras ya está asignado a otro gusto",
+            });
+          }
+
+          await pool
+            .promise()
+            .query(
+              "UPDATE gustos SET codigo_barra = ? WHERE producto_id = ? AND nombre = ?",
+              [codigo_barra, gustoInfo.producto_id, gustoInfo.nombre]
+            );
         }
       }
 
