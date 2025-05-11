@@ -98,6 +98,12 @@ router.post(
 // Buscar producto por código de barras
 router.get("/buscar-por-codigo/:codigo", async (req, res) => {
   const { codigo } = req.params;
+  const { sucursal_id } = req.query;
+
+  if (!sucursal_id) {
+    return res.status(400).json({ error: "Falta el parámetro sucursal_id" });
+  }
+
   try {
     const [result] = await pool.promise().query(
       `SELECT 
@@ -107,9 +113,10 @@ router.get("/buscar-por-codigo/:codigo", async (req, res) => {
         g.codigo_barra
       FROM gustos g
       JOIN productos p ON g.producto_id = p.id
-      WHERE g.codigo_barra = ?
+      JOIN stock st ON st.gusto_id = g.id
+      WHERE g.codigo_barra = ? AND st.sucursal_id = ?
       LIMIT 1`,
-      [codigo]
+      [codigo, sucursal_id]
     );
 
     if (result.length === 0) {
@@ -122,5 +129,6 @@ router.get("/buscar-por-codigo/:codigo", async (req, res) => {
     res.status(500).json({ error: "Error al buscar producto por código" });
   }
 });
+
 
 module.exports = router;
