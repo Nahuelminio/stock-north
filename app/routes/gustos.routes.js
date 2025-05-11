@@ -96,27 +96,32 @@ router.post(
 
 
 // Buscar producto por código de barras
-router.get("/buscar-por-codigo/:codigo", async (req, res) => {
+rrouter.get("/buscar-por-codigo/:codigo", async (req, res) => {
   const { codigo } = req.params;
   const { sucursal_id } = req.query;
 
-  if (!sucursal_id) {
-    return res.status(400).json({ error: "Falta el parámetro sucursal_id" });
-  }
-
   try {
-    const [result] = await pool.promise().query(
-      `SELECT 
+    let query = `
+      SELECT 
         p.nombre AS producto_nombre,
         g.nombre AS gusto,
         g.id AS gusto_id,
         g.codigo_barra
       FROM gustos g
       JOIN productos p ON g.producto_id = p.id
-      WHERE g.codigo_barra = ? 
-      LIMIT 1`,
-      [codigo]
-    );
+      JOIN stock st ON st.gusto_id = g.id
+      WHERE g.codigo_barra = ?
+    `;
+    const params = [codigo];
+
+    if (sucursal_id) {
+      query += " AND st.sucursal_id = ?";
+      params.push(sucursal_id);
+    }
+
+    query += " LIMIT 1";
+
+    const [result] = await pool.promise().query(query, params);
 
     if (result.length === 0) {
       return res.status(404).json({ error: "Producto no encontrado" });
