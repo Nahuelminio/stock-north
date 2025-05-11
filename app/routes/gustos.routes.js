@@ -113,10 +113,9 @@ router.get("/buscar-por-codigo/:codigo", async (req, res) => {
         g.codigo_barra
       FROM gustos g
       JOIN productos p ON g.producto_id = p.id
-      JOIN stock st ON st.gusto_id = g.id
-      WHERE g.codigo_barra = ? AND st.sucursal_id = ?
+      WHERE g.codigo_barra = ? 
       LIMIT 1`,
-      [codigo, sucursal_id]
+      [codigo]
     );
 
     if (result.length === 0) {
@@ -129,6 +128,7 @@ router.get("/buscar-por-codigo/:codigo", async (req, res) => {
     res.status(500).json({ error: "Error al buscar producto por código" });
   }
 });
+
 
 
 module.exports = router;
