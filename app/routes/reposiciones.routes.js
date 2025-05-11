@@ -173,14 +173,25 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
           ]);
 
         if (gustoInfo) {
-          // Paso 1: limpiar duplicados antes de aplicar el código
-          await pool.promise().query(
-            `UPDATE gustos SET codigo_barra = NULL 
+          // Paso 1: buscar duplicados globales (en cualquier sucursal)
+          const [duplicados] = await pool.promise().query(
+            `SELECT id FROM gustos 
              WHERE producto_id = ? AND nombre = ? AND codigo_barra = ? AND id != ?`,
             [gustoInfo.producto_id, gustoInfo.nombre, codigo_barra, gusto_id]
           );
 
-          // Paso 2: aplicar el código solo a las que no lo tienen o lo tienen distinto
+          const idsDuplicados = duplicados.map((d) => d.id);
+
+          if (idsDuplicados.length > 0) {
+            await pool
+              .promise()
+              .query(
+                `UPDATE gustos SET codigo_barra = NULL WHERE id IN (${idsDuplicados.join(
+                  ","
+                )})`
+              );
+          }
+
           await pool.promise().query(
             `UPDATE gustos 
              SET codigo_barra = ? 
