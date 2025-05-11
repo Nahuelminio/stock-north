@@ -146,12 +146,13 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
       .json({ error: "Formato inválido. Se espera un array." });
   }
 
+  console.log("📦 Datos recibidos en actualización masiva:", actualizaciones);
+
   try {
     for (const item of actualizaciones) {
       const { gusto_id, sucursal_id, cantidad, precio, codigo_barra } = item;
 
       if (codigo_barra && codigo_barra.trim() !== "") {
-        // Validar duplicado solo dentro de la misma sucursal
         const [repetido] = await pool.promise().query(
           `SELECT g.id FROM gustos g
            JOIN stock st ON st.gusto_id = g.id
@@ -165,7 +166,6 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
           });
         }
 
-        // Obtener producto_id y nombre del gusto
         const [[gustoInfo]] = await pool
           .promise()
           .query("SELECT producto_id, nombre FROM gustos WHERE id = ?", [
@@ -192,11 +192,8 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
 
     res.json({ mensaje: "Actualización masiva realizada con éxito ✅" });
   } catch (error) {
-    console.error(
-      "❌ Error en actualización masiva:",
-      error.message,
-      error.stack
-    );
+    console.error("❌ Error en actualización masiva:", error.message);
+    console.error(error.stack);
     res.status(500).json({ error: "Error al actualizar stock/precio" });
   }
 });
