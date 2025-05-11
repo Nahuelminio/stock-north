@@ -196,7 +196,6 @@ router.post(
           ]);
 
         if (gustoInfo) {
-          // Verificar si ya existe en toda la tabla ese código
           const [codigoExistenteGlobal] = await pool
             .promise()
             .query("SELECT id FROM gustos WHERE codigo_barra = ? AND id != ?", [
@@ -210,12 +209,12 @@ router.post(
             });
           }
 
-          await pool
-            .promise()
-            .query(
-              "UPDATE gustos SET codigo_barra = ? WHERE producto_id = ? AND nombre = ?",
-              [codigo_barra, gustoInfo.producto_id, gustoInfo.nombre]
-            );
+          await pool.promise().query(
+            `UPDATE gustos 
+               SET codigo_barra = ? 
+               WHERE producto_id = ? AND nombre = ? AND id = ?`,
+            [codigo_barra, gustoInfo.producto_id, gustoInfo.nombre, gusto_id]
+          );
         }
       }
 
@@ -226,6 +225,7 @@ router.post(
     }
   }
 );
+
 
 
 // 🔵 Ver productos disponibles por sucursal
