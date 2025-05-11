@@ -165,12 +165,21 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
           });
         }
 
-        await pool
+        // Obtener producto_id y nombre del gusto
+        const [[gustoInfo]] = await pool
           .promise()
-          .query("UPDATE gustos SET codigo_barra = ? WHERE id = ?", [
-            codigo_barra,
+          .query("SELECT producto_id, nombre FROM gustos WHERE id = ?", [
             gusto_id,
           ]);
+
+        if (gustoInfo) {
+          await pool.promise().query(
+            `UPDATE gustos 
+             SET codigo_barra = ? 
+             WHERE producto_id = ? AND nombre = ?`,
+            [codigo_barra, gustoInfo.producto_id, gustoInfo.nombre]
+          );
+        }
       }
 
       await pool
@@ -191,6 +200,7 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al actualizar stock/precio" });
   }
 });
+
 
 
 module.exports = router;
