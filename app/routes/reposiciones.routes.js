@@ -176,8 +176,13 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
           await pool.promise().query(
             `UPDATE gustos 
              SET codigo_barra = ? 
-             WHERE producto_id = ? AND nombre = ?`,
-            [codigo_barra, gustoInfo.producto_id, gustoInfo.nombre]
+             WHERE producto_id = ? AND nombre = ? AND (codigo_barra IS NULL OR codigo_barra != ?)`,
+            [
+              codigo_barra,
+              gustoInfo.producto_id,
+              gustoInfo.nombre,
+              codigo_barra,
+            ]
           );
         }
       }
@@ -197,6 +202,7 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al actualizar stock/precio" });
   }
 });
+
 
 
 module.exports = router;
