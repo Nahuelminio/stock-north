@@ -148,7 +148,31 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
 
   try {
     for (const item of actualizaciones) {
-      const { gusto_id, sucursal_id, cantidad, precio } = item;
+      const { gusto_id, sucursal_id, cantidad, precio, codigo_barra } = item;
+
+      // Validar código único si se proporciona uno nuevo
+      if (codigo_barra) {
+        const [existe] = await pool
+          .promise()
+          .query("SELECT id FROM gustos WHERE codigo_barra = ? AND id != ?", [
+            codigo_barra,
+            gusto_id,
+          ]);
+
+        if (existe.length > 0) {
+          return res.status(400).json({
+            error: `El código de barras ${codigo_barra} ya está asignado a otro gusto`,
+          });
+        }
+
+        await pool
+          .promise()
+          .query("UPDATE gustos SET codigo_barra = ? WHERE id = ?", [
+            codigo_barra,
+            gusto_id,
+          ]);
+      }
+
       await pool
         .promise()
         .query(
@@ -159,7 +183,11 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
 
     res.json({ mensaje: "Actualización masiva realizada con éxito ✅" });
   } catch (error) {
-    console.error("❌ Error en actualización masiva:", error);
+    console.error(
+      "❌ Error en actualización masiva:",
+      error.message,
+      error.stack
+    );
     res.status(500).json({ error: "Error al actualizar stock/precio" });
   }
 });
