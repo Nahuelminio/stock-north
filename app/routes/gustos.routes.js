@@ -3,29 +3,98 @@ const router = express.Router();
 const pool = require("../db");
 
 // Editar gusto (nombre y código de barra)
-router.post("/editar/:gusto_id", async (req, res) => {
-  const { nuevoGusto, codigo_barra } = req.body;
-  const { gusto_id } = req.params;
+router.post(
+  "/editar/:gusto_id",
+  authenticate,
+  authorizeAdmin,
+  async (req, res) => {
+    const { stock, sucursal_id, nuevoGusto, precio, codigo_barra } = req.body;
+    const { gusto_id } = req.params;
 
-  if (!nuevoGusto && !codigo_barra) {
-    return res.status(400).json({ error: "Faltan datos para editar gusto" });
+    console.log("📥 Body recibido en edición:", req.body);
+    console.log("🆔 gusto_id recibido:", gusto_id);
+
+    if (
+      stock === undefined ||
+      precio === undefined ||
+      !sucursal_id ||
+      !nuevoGusto
+    ) {
+      return res.status(400).json({
+        error:
+          "Faltan datos obligatorios (stock, precio, sucursal_id, nuevoGusto)",
+      });
+    }
+
+    try {
+      if (codigo_barra) {
+        const [existe] = await pool.promise().query(
+          `SELECT g.id FROM gustos g
+           JOIN stock st ON st.gusto_id = g.id
+           WHERE g.codigo_barra = ? AND st.sucursal_id = ? AND g.id != ?`,
+          [codigo_barra, sucursal_id, gusto_id]
+        );
+        if (existe.length > 0) {
+          return res.status(400).json({
+            error: "Este código de barras ya existe en esta sucursal",
+          });
+        }
+      }
+
+      await pool
+        .promise()
+        .query("UPDATE gustos SET nombre = ?, codigo_barra = ? WHERE id = ?", [
+          nuevoGusto,
+          codigo_barra || null,
+          gusto_id,
+        ]);
+
+      await pool
+        .promise()
+        .query(
+          "UPDATE stock SET cantidad = ?, precio = ? WHERE gusto_id = ? AND sucursal_id = ?",
+          [stock, precio, gusto_id, sucursal_id]
+        );
+
+      if (codigo_barra) {
+        const [[gustoInfo]] = await pool
+          .promise()
+          .query("SELECT producto_id, nombre FROM gustos WHERE id = ?", [
+            gusto_id,
+          ]);
+
+        if (gustoInfo) {
+          // Verificar si ya existe en toda la tabla ese código
+          const [codigoExistenteGlobal] = await pool
+            .promise()
+            .query("SELECT id FROM gustos WHERE codigo_barra = ? AND id != ?", [
+              codigo_barra,
+              gusto_id,
+            ]);
+
+          if (codigoExistenteGlobal.length > 0) {
+            return res.status(400).json({
+              error: "Este código de barras ya está asignado a otro gusto",
+            });
+          }
+
+          await pool
+            .promise()
+            .query(
+              "UPDATE gustos SET codigo_barra = ? WHERE producto_id = ? AND nombre = ?",
+              [codigo_barra, gustoInfo.producto_id, gustoInfo.nombre]
+            );
+        }
+      }
+
+      res.json({ mensaje: "Producto actualizado correctamente ✅" });
+    } catch (error) {
+      console.error("❌ Error al editar producto:", error.message, error.stack);
+      res.status(500).json({ error: "Error al editar producto" });
+    }
   }
+);
 
-  try {
-    await pool
-      .promise()
-      .query("UPDATE gustos SET nombre = ?, codigo_barra = ? WHERE id = ?", [
-        nuevoGusto || null,
-        codigo_barra || null,
-        gusto_id,
-      ]);
-
-    res.json({ mensaje: "Gusto actualizado correctamente" });
-  } catch (error) {
-    console.error("❌ Error al editar gusto:", error);
-    res.status(500).json({ error: "Error al editar gusto" });
-  }
-});
 
 // Buscar producto por código de barras
 router.get("/buscar-por-codigo/:codigo", async (req, res) => {
