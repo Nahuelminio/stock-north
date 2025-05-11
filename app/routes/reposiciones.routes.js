@@ -149,7 +149,9 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
   console.log("📦 Datos recibidos en actualización masiva:", actualizaciones);
 
   try {
-    // 🔁 PASO 1: limpiar códigos duplicados
+    const procesados = new Set();
+
+    // 🔁 PASO 1: limpiar códigos duplicados globales una sola vez por producto+gusto+codigo
     for (const item of actualizaciones) {
       const { gusto_id, codigo_barra } = item;
 
@@ -161,6 +163,10 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
           ]);
 
         if (gustoInfo) {
+          const clave = `${gustoInfo.producto_id}-${gustoInfo.nombre}-${codigo_barra}`;
+          if (procesados.has(clave)) continue;
+          procesados.add(clave);
+
           const [duplicados] = await pool.promise().query(
             `SELECT id FROM gustos 
              WHERE producto_id = ? AND nombre = ? AND codigo_barra = ? AND id != ?`,
@@ -236,6 +242,7 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al actualizar stock/precio" });
   }
 });
+
 
 
 
