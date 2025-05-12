@@ -38,7 +38,7 @@ router.get("/ventas", async (req, res) => {
 
 
 // Historial de reposiciones
-router.get("historial-reposiciones", async (req, res) => {
+router.get("/historial-reposiciones", async (req, res) => {
   const { producto, gusto, sucursal_id, fecha_inicio, fecha_fin } = req.query;
 
   try {
