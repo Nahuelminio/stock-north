@@ -151,38 +151,41 @@ router.get("/total-por-sucursal", authenticate, async (req, res) => {
 });
 
 // 🔵 Ventas mensuales por sucursal (solo admin)
-router.get("/ventas-mensuales-por-sucursal", authenticate, async (req, res) => {
-  const { rol } = req.user;
+router.get("/buscar-por-codigo/:codigo", async (req, res) => {
+  const { codigo } = req.params;
+  const { sucursal_id } = req.query;
 
-  if (rol !== "admin") {
-    return res
-      .status(403)
-      .json({ error: "Acceso denegado: sólo administradores" });
+  if (!codigo || !sucursal_id) {
+    return res.status(400).json({ error: "Faltan parámetros" });
   }
 
   try {
-    const [result] = await pool.promise().query(`
-      SELECT 
-        s.nombre AS sucursal,
-        MONTH(v.fecha) AS mes,
-        YEAR(v.fecha) AS anio,
-        SUM(v.cantidad) AS total_ventas,
-        SUM(v.cantidad * st.precio) AS total_facturado
-      FROM ventas v
-      JOIN sucursales s ON v.sucursal_id = s.id
-      JOIN gustos g ON v.gusto_id = g.id
-      JOIN stock st ON st.gusto_id = g.id AND st.sucursal_id = v.sucursal_id
-      GROUP BY s.id, anio, mes
-      ORDER BY anio DESC, mes DESC, s.nombre
-    `);
+    const [result] = await pool.promise().query(
+      `SELECT 
+        p.nombre AS producto_nombre,
+        g.nombre AS gusto,
+        g.id AS gusto_id,
+        g.codigo_barra
+      FROM gustos g
+      JOIN productos p ON g.producto_id = p.id
+      JOIN stock st ON st.gusto_id = g.id
+      WHERE g.codigo_barra = ? AND st.sucursal_id = ?
+      LIMIT 1`,
+      [codigo, sucursal_id]
+    );
 
-    res.json(result);
+    if (result.length === 0) {
+      return res
+        .status(404)
+        .json({ error: "Producto no encontrado en esta sucursal" });
+    }
+
+    res.json(result[0]);
   } catch (error) {
-    console.error("❌ Error al obtener ventas mensuales por sucursal:", error);
-    res
-      .status(500)
-      .json({ error: "Error al obtener ventas mensuales por sucursal" });
+    console.error("❌ Error al buscar producto por código:", error);
+    res.status(500).json({ error: "Error al buscar producto por código" });
   }
 });
+
 
 module.exports = router;
