@@ -5,18 +5,22 @@ const authenticate = require("../middlewares/authenticate");
 
 // 🔵 Vender producto (de su sucursal)
 router.post("/vender", authenticate, async (req, res) => {
-  const { gusto_id, cantidad } = req.body;
-  const { sucursalId } = req.user;
+  const { gusto_id, cantidad, sucursal_id } = req.body;
+  const { rol, sucursalId: sucursalIdDesdeToken } = req.user;
 
-  if (!gusto_id || !cantidad) {
+  // 💡 Determinar la sucursal final según el rol
+  const sucursalIdFinal = rol === "admin" ? sucursal_id : sucursalIdDesdeToken;
+
+  if (!gusto_id || !cantidad || !sucursalIdFinal) {
     return res.status(400).json({ error: "Datos incompletos" });
   }
+
   try {
     const [[stock]] = await pool
       .promise()
       .query(
         "SELECT cantidad FROM stock WHERE gusto_id = ? AND sucursal_id = ?",
-        [gusto_id, sucursalId]
+        [gusto_id, sucursalIdFinal]
       );
 
     if (!stock || stock.cantidad < cantidad) {
@@ -29,14 +33,14 @@ router.post("/vender", authenticate, async (req, res) => {
       .promise()
       .query(
         "UPDATE stock SET cantidad = cantidad - ? WHERE gusto_id = ? AND sucursal_id = ?",
-        [cantidad, gusto_id, sucursalId]
+        [cantidad, gusto_id, sucursalIdFinal]
       );
 
     await pool
       .promise()
       .query(
         "INSERT INTO ventas (gusto_id, sucursal_id, cantidad, fecha) VALUES (?, ?, ?, NOW())",
-        [gusto_id, sucursalId, cantidad]
+        [gusto_id, sucursalIdFinal, cantidad]
       );
 
     res.json({ mensaje: "✅ Venta registrada" });
@@ -45,6 +49,7 @@ router.post("/vender", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al registrar venta" });
   }
 });
+
 
 // 🔵 Ventas mensuales (solo de su sucursal, salvo admin)
 router.get("/ventas-mensuales", authenticate, async (req, res) => {
