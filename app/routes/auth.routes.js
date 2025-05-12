@@ -70,7 +70,11 @@ router.post("/login", async (req, res) => {
     }
 
     const token = jwt.sign(
-      { userId: user.id, sucursalId: user.sucursal_id, rol: user.rol },
+      {
+        id: user.id,
+        sucursal_id: user.sucursal_id,
+        rol: user.rol,
+      },
       jwtSecret,
       { expiresIn: "8h" }
     );
@@ -83,6 +87,5 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ error: "Error al iniciar sesión" });
   }
 });
-
 
 module.exports = router;
