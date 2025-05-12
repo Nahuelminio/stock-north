@@ -125,8 +125,8 @@ router.get("/buscar-por-codigo/:codigo", async (req, res) => {
 
     res.json(result[0]);
   } catch (error) {
-    console.error("❌ Error:", error);
-    res.status(500).json({ error: "Error interno" });
+    console.error("❌ Error al buscar producto por código:", error);
+    res.status(500).json({ error: "Error al buscar producto por código" });
   }
 });
 
