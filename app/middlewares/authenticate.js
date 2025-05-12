@@ -11,7 +11,14 @@ const authenticate = (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; // { userId, sucursalId, rol }
+
+    // Estandariza la clave para mantener compatibilidad en el backend
+    req.user = {
+      id: decoded.id,
+      rol: decoded.rol,
+      sucursalId: decoded.sucursal_id || null,
+    };
+
     next();
   } catch (error) {
     console.error("Error de autenticación:", error);
