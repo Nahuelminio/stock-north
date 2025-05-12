@@ -100,8 +100,8 @@ router.get("/buscar-por-codigo/:codigo", async (req, res) => {
   const { codigo } = req.params;
   const { sucursal_id } = req.query;
 
-  if (!codigo || !sucursal_id) {
-    return res.status(400).json({ error: "Faltan parámetros requeridos" });
+  if (!sucursal_id) {
+    return res.status(400).json({ error: "Falta sucursal_id" });
   }
 
   try {
@@ -125,8 +125,8 @@ router.get("/buscar-por-codigo/:codigo", async (req, res) => {
 
     res.json(result[0]);
   } catch (error) {
-    console.error("❌ Error al buscar producto por código:", error);
-    res.status(500).json({ error: "Error al buscar producto por código" });
+    console.error("❌ Error:", error);
+    res.status(500).json({ error: "Error interno" });
   }
 });
 
