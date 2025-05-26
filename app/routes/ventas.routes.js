@@ -50,7 +50,6 @@ router.post("/vender", authenticate, async (req, res) => {
   }
 });
 
-
 // 🔵 Ventas mensuales (solo de su sucursal, salvo admin)
 router.get("/ventas-mensuales", authenticate, async (req, res) => {
   const { mes, anio } = req.query;
@@ -88,9 +87,9 @@ router.get("/ventas-mensuales", authenticate, async (req, res) => {
   }
 });
 
-// 🔵 Historial de ventas (filtrado automático por sucursal si no es admin)
 router.get("/historial", authenticate, async (req, res) => {
   const { sucursalId, rol } = req.user;
+  const filtroSucursal = req.query.sucursal_id;
 
   try {
     let query = `
@@ -108,11 +107,16 @@ router.get("/historial", authenticate, async (req, res) => {
       JOIN sucursales s ON v.sucursal_id = s.id
       JOIN stock st ON st.gusto_id = g.id AND st.sucursal_id = v.sucursal_id
     `;
+
     const params = [];
 
+    // Si no es admin, forzar su propia sucursal
     if (rol !== "admin") {
       query += " WHERE v.sucursal_id = ?";
       params.push(sucursalId);
+    } else if (filtroSucursal) {
+      query += " WHERE v.sucursal_id = ?";
+      params.push(filtroSucursal);
     }
 
     query += " ORDER BY v.fecha DESC";
@@ -191,7 +195,5 @@ router.get("/buscar-por-codigo/:codigo", async (req, res) => {
     res.status(500).json({ error: "Error interno" });
   }
 });
-
-
 
 module.exports = router;
