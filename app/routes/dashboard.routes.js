@@ -88,5 +88,28 @@ router.get("/resumen-ganancias-mensual", async (req, res) => {
       .json({ error: "Error al obtener resumen mensual de ganancias" });
   }
 });
+router.get("/ranking-productos-sucursal", async (req, res) => {
+  try {
+    const [rows] = await pool.promise().query(`
+      SELECT 
+        s.nombre AS sucursal,
+        p.nombre AS producto_nombre,
+        g.nombre AS gusto,
+        SUM(v.cantidad) AS total_vendido
+      FROM ventas v
+      JOIN sucursales s ON v.sucursal_id = s.id
+      JOIN gustos g ON v.gusto_id = g.id
+      JOIN productos p ON g.producto_id = p.id
+      GROUP BY v.sucursal_id, v.gusto_id
+      ORDER BY s.nombre ASC, total_vendido DESC
+    `);
+
+    res.json(rows);
+  } catch (error) {
+    console.error("❌ Error en ranking por sucursal:", error);
+    res.status(500).json({ error: "Error al obtener ranking" });
+  }
+});
+
 
 module.exports = router;
