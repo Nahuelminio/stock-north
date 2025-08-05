@@ -89,8 +89,15 @@ router.get("/resumen-ganancias-mensual", async (req, res) => {
   }
 });
 router.get("/ranking-productos-sucursal", async (req, res) => {
+  const { mes, anio } = req.query;
+
+  if (!mes || !anio) {
+    return res.status(400).json({ error: "Faltan parámetros mes o año" });
+  }
+
   try {
-    const [rows] = await pool.promise().query(`
+    const [rows] = await pool.promise().query(
+      `
       SELECT 
         s.nombre AS sucursal,
         p.nombre AS producto_nombre,
@@ -100,16 +107,20 @@ router.get("/ranking-productos-sucursal", async (req, res) => {
       JOIN sucursales s ON v.sucursal_id = s.id
       JOIN gustos g ON v.gusto_id = g.id
       JOIN productos p ON g.producto_id = p.id
-      GROUP BY v.sucursal_id, v.gusto_id
-      ORDER BY s.nombre ASC, total_vendido DESC
-    `);
+      WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?
+      GROUP BY s.id, g.id
+      ORDER BY s.nombre, total_vendido DESC;
+    `,
+      [mes, anio]
+    );
 
     res.json(rows);
   } catch (error) {
-    console.error("❌ Error en ranking por sucursal:", error);
-    res.status(500).json({ error: "Error al obtener ranking" });
+    console.error("❌ Error al obtener ranking:", error);
+    res.status(500).json({ error: "Error al obtener el ranking" });
   }
 });
+
 
 
 module.exports = router;
