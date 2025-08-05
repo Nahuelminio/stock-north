@@ -54,5 +54,39 @@ GROUP BY s.id;
     res.status(500).json({ error: "Error al obtener resumen de ganancias" });
   }
 });
+router.get("/resumen-ganancias-mensual", async (req, res) => {
+  const { mes, anio } = req.query;
+
+  if (!mes || !anio) {
+    return res.status(400).json({ error: "Debe proporcionar mes y año" });
+  }
+
+  try {
+    const [rows] = await pool.promise().query(
+      `
+      SELECT 
+        s.nombre AS sucursal,
+        SUM(v.cantidad * st.precio) AS total_ventas,
+        SUM(v.cantidad * p.precio_costo) AS costo_total,
+        SUM((v.cantidad * st.precio) - (v.cantidad * p.precio_costo)) AS ganancia
+      FROM ventas v
+      JOIN sucursales s ON v.sucursal_id = s.id
+      JOIN gustos g ON v.gusto_id = g.id
+      JOIN productos p ON g.producto_id = p.id
+      JOIN stock st ON v.gusto_id = st.gusto_id AND v.sucursal_id = st.sucursal_id
+      WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?
+      GROUP BY s.id;
+    `,
+      [mes, anio]
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error("❌ Error al obtener resumen mensual:", error);
+    res
+      .status(500)
+      .json({ error: "Error al obtener resumen mensual de ganancias" });
+  }
+});
 
 module.exports = router;
