@@ -25,6 +25,8 @@ app.use("/", require("./routes/pagos.routes"));
 app.use("/", require("./routes/historial.routes"));
 app.use("/sucursales", require("./routes/sucursales.routes"));
 app.use("/", require("./routes/importar.routes"));
+app.use("/admin/stock", require("./routes/adminStock.routes"));
+
 
 // 🔵 Nueva ruta para Registro y Login
 app.use("/auth", require("./routes/auth.routes"));
