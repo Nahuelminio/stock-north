@@ -135,96 +135,117 @@ router.delete(
 );
 
 // 🔵 Editar producto (solo admin)
-router.post(
-  "/editar/:gusto_id",
-  authenticate,
-  authorizeAdmin,
-  async (req, res) => {
-    const { stock, sucursal_id, nuevoGusto, precio, codigo_barra } = req.body;
-    const { gusto_id } = req.params;
+// 🔵 Editar producto (parcial/flexible)
+router.post("/editar/:gusto_id", authenticate, authorizeAdmin, async (req, res) => {
+  const { gusto_id } = req.params;
 
-    console.log("📥 Body recibido en edición:", req.body);
-    console.log("🆔 gusto_id recibido:", gusto_id);
+  // ✅ Normalización de campos (acepta varios nombres)
+  const sucursal_id  = req.body.sucursal_id ?? req.body.sucursalId ?? req.body.sucursal ?? null;
+  const nuevoGusto   = (req.body.nuevoGusto ?? req.body.gusto ?? req.body.nombre ?? null);
+  const stockRaw     = req.body.stock;
+  const precioRaw    = req.body.precio;
+  const codigo_barra = (req.body.codigo_barra ?? req.body.codigoBarra ?? req.body.barcode ?? undefined);
 
-    if (
-      stock === undefined ||
-      precio === undefined ||
-      !sucursal_id ||
-      !nuevoGusto
-    ) {
-      return res.status(400).json({
-        error:
-          "Faltan datos obligatorios (stock, precio, sucursal_id, nuevoGusto)",
-      });
-    }
+  // ✅ Coerciones seguras (solo si vinieron)
+  const stock  = (stockRaw  !== undefined ? Number(stockRaw)  : undefined);
+  const precio = (precioRaw !== undefined ? Number(precioRaw) : undefined);
 
-    try {
-      if (codigo_barra) {
-        const [existe] = await pool.promise().query(
-          `SELECT g.id FROM gustos g
-           JOIN stock st ON st.gusto_id = g.id
-           WHERE g.codigo_barra = ? AND st.sucursal_id = ? AND g.id != ?`,
+  console.log("📥 Body:", req.body);
+  console.log("✅ Normalizado:", { gusto_id, sucursal_id, nuevoGusto, stock, precio, codigo_barra });
+
+  // Si no vino nada para actualizar
+  const quiereActualizarGusto = (nuevoGusto !== null) || (codigo_barra !== undefined);
+  const quiereActualizarStock = (stock !== undefined) || (precio !== undefined);
+  if (!quiereActualizarGusto && !quiereActualizarStock) {
+    return res.status(400).json({ error: "No hay campos para actualizar." });
+  }
+
+  // Si quiere actualizar stock/precio, necesitamos sucursal_id
+  if (quiereActualizarStock && !sucursal_id) {
+    return res.status(400).json({ error: "Para actualizar stock o precio se requiere sucursal_id." });
+  }
+
+  // Validaciones básicas de tipo si vinieron
+  if (precio !== undefined && !Number.isFinite(precio)) {
+    return res.status(400).json({ error: "Precio inválido." });
+  }
+  if (stock !== undefined && !Number.isFinite(stock)) {
+    return res.status(400).json({ error: "Stock inválido." });
+  }
+  if (nuevoGusto !== null && String(nuevoGusto).trim() === "") {
+    return res.status(400).json({ error: "El gusto no puede estar vacío." });
+  }
+
+  try {
+    // 🔎 Si vino código de barras, validá duplicados
+    if (codigo_barra !== undefined) {
+      // 1) Chequeo global (que no lo tenga otro gusto distinto)
+      const [dupeGlobal] = await pool.promise().query(
+        "SELECT id FROM gustos WHERE codigo_barra = ? AND id != ?",
+        [codigo_barra, gusto_id]
+      );
+      if (codigo_barra && dupeGlobal.length > 0) {
+        return res.status(400).json({ error: "Este código de barras ya está asignado a otro gusto." });
+      }
+
+      // 2) Chequeo por sucursal (si nos dieron sucursal)
+      if (sucursal_id) {
+        const [dupeSucursal] = await pool.promise().query(
+          `SELECT g.id
+             FROM gustos g
+             JOIN stock st ON st.gusto_id = g.id
+            WHERE g.codigo_barra = ? AND st.sucursal_id = ? AND g.id != ?`,
           [codigo_barra, sucursal_id, gusto_id]
         );
-        if (existe.length > 0) {
-          return res.status(400).json({
-            error: "Este código de barras ya existe en esta sucursal",
-          });
+        if (codigo_barra && dupeSucursal.length > 0) {
+          return res.status(400).json({ error: "Este código de barras ya existe en esta sucursal." });
         }
       }
-
-      await pool
-        .promise()
-        .query("UPDATE gustos SET nombre = ?, codigo_barra = ? WHERE id = ?", [
-          nuevoGusto,
-          codigo_barra || null,
-          gusto_id,
-        ]);
-
-      await pool
-        .promise()
-        .query(
-          "UPDATE stock SET cantidad = ?, precio = ? WHERE gusto_id = ? AND sucursal_id = ?",
-          [stock, precio, gusto_id, sucursal_id]
-        );
-
-      if (codigo_barra) {
-        const [[gustoInfo]] = await pool
-          .promise()
-          .query("SELECT producto_id, nombre FROM gustos WHERE id = ?", [
-            gusto_id,
-          ]);
-
-        if (gustoInfo) {
-          const [codigoExistenteGlobal] = await pool
-            .promise()
-            .query("SELECT id FROM gustos WHERE codigo_barra = ? AND id != ?", [
-              codigo_barra,
-              gusto_id,
-            ]);
-
-          if (codigoExistenteGlobal.length > 0) {
-            return res.status(400).json({
-              error: "Este código de barras ya está asignado a otro gusto",
-            });
-          }
-
-          await pool.promise().query(
-            `UPDATE gustos 
-               SET codigo_barra = ? 
-               WHERE producto_id = ? AND nombre = ? AND id = ?`,
-            [codigo_barra, gustoInfo.producto_id, gustoInfo.nombre, gusto_id]
-          );
-        }
-      }
-
-      res.json({ mensaje: "Producto actualizado correctamente ✅" });
-    } catch (error) {
-      console.error("❌ Error al editar producto:", error.message, error.stack);
-      res.status(500).json({ error: "Error al editar producto" });
     }
+
+    // 🧩 1) Actualizar tabla GUSTOS si corresponde
+    if (quiereActualizarGusto) {
+      const sets = [];
+      const params = [];
+      if (nuevoGusto !== null)         { sets.push("nombre = ?");       params.push(nuevoGusto); }
+      if (codigo_barra !== undefined)  { sets.push("codigo_barra = ?"); params.push(codigo_barra || null); }
+
+      if (sets.length) {
+        params.push(gusto_id);
+        await pool.promise().query(`UPDATE gustos SET ${sets.join(", ")} WHERE id = ?`, params);
+      }
+    }
+
+    // 🧩 2) Actualizar tabla STOCK si corresponde
+    if (quiereActualizarStock) {
+      const sets = [];
+      const params = [];
+      if (stock  !== undefined) { sets.push("cantidad = ?"); params.push(stock); }
+      if (precio !== undefined) { sets.push("precio = ?");   params.push(precio); }
+      params.push(gusto_id, sucursal_id);
+
+      const [upd] = await pool
+        .promise()
+        .query(`UPDATE stock SET ${sets.join(", ")} WHERE gusto_id = ? AND sucursal_id = ?`, params);
+
+      if (upd.affectedRows === 0) {
+        // Si no existe la fila de stock para esa sucursal/gusto, podés decidir crearla:
+        // await pool.promise().query(
+        //   "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
+        //   [gusto_id, sucursal_id, stock ?? 0, precio ?? 0]
+        // );
+        return res.status(404).json({ error: "No existe stock para ese gusto en esa sucursal." });
+      }
+    }
+
+    // (Opcional) podés retornar el registro actualizado
+    res.json({ ok: true, mensaje: "Producto actualizado correctamente ✅" });
+  } catch (error) {
+    console.error("❌ Error al editar producto:", error.message, error.stack);
+    res.status(500).json({ error: "Error al editar producto" });
   }
-);
+});
+
 
 
 
