@@ -4,6 +4,7 @@ const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
 
 // 🔵 Vender producto (de su sucursal) — con validación de cantidad
+// 🔵 Vender producto (de su sucursal) — con validación de cantidad y conexión promisificada
 router.post("/vender", authenticate, async (req, res) => {
   const { rol, sucursalId: sucursalIdDesdeToken } = req.user;
 
@@ -24,7 +25,8 @@ router.post("/vender", authenticate, async (req, res) => {
     return res.status(400).json({ error: "sucursal_id inválido" });
   }
 
-  const conn = await pool.getConnection();
+  // 👇 clave: usá el pool promisificado para la conexión
+  const conn = await pool.promise().getConnection();
   try {
     await conn.beginTransaction();
 
@@ -51,7 +53,7 @@ router.post("/vender", authenticate, async (req, res) => {
     );
 
     // Registrar venta con precio_unitario (precio en el momento)
-    await conn.query(
+    const [ins] = await conn.query(
       `INSERT INTO ventas (gusto_id, sucursal_id, cantidad, precio_unitario, fecha)
        VALUES (?, ?, ?, ?, NOW())`,
       [gustoId, sucursalIdFinal, cantidad, stockRow.precio]
@@ -60,16 +62,18 @@ router.post("/vender", authenticate, async (req, res) => {
     await conn.commit();
     return res.json({
       mensaje: "✅ Venta registrada",
+      venta_id: ins.insertId,
       precio_unitario: stockRow.precio,
     });
   } catch (e) {
     await conn.rollback();
-    console.error("❌ Error al registrar venta:", e);
+    console.error("❌ Error al registrar venta:", e.code || e.message, e);
     return res.status(500).json({ error: "Error al registrar venta" });
   } finally {
     conn.release();
   }
 });
+
 
 
 // 🔵 Ventas mensuales (solo de su sucursal, salvo admin)
