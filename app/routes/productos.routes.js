@@ -134,72 +134,66 @@ router.delete(
   }
 );
 
-// 🔵 Editar producto (solo admin)
-// 🔵 Editar producto (parcial/flexible)
+// 🔵 Editar producto (parcial/flexible) — código único por sucursal
 router.post("/editar/:gusto_id", authenticate, authorizeAdmin, async (req, res) => {
   const { gusto_id } = req.params;
 
-  // ✅ Normalización de campos (acepta varios nombres)
-  const sucursal_id  = req.body.sucursal_id ?? req.body.sucursalId ?? req.body.sucursal ?? null;
-  const nuevoGusto   = (req.body.nuevoGusto ?? req.body.gusto ?? req.body.nombre ?? null);
-  const stockRaw     = req.body.stock;
-  const precioRaw    = req.body.precio;
-  const codigo_barra = (req.body.codigo_barra ?? req.body.codigoBarra ?? req.body.barcode ?? undefined);
+  // ✅ Normalización de campos
+  const sucursal_id   = req.body.sucursal_id ?? req.body.sucursalId ?? req.body.sucursal ?? null;
+  const nuevoGustoRaw = req.body.nuevoGusto ?? req.body.gusto ?? req.body.nombre ?? null;
+  const stockRaw      = req.body.stock;
+  const precioRaw     = req.body.precio;
+  const codigo_barra  = (req.body.codigo_barra ?? req.body.codigoBarra ?? req.body.barcode ?? undefined);
 
-  // ✅ Coerciones seguras (solo si vinieron)
+  // ✅ Coerciones (solo si vinieron)
   const stock  = (stockRaw  !== undefined ? Number(stockRaw)  : undefined);
   const precio = (precioRaw !== undefined ? Number(precioRaw) : undefined);
+  const nuevoGusto = (nuevoGustoRaw !== null ? String(nuevoGustoRaw).trim() : null);
 
   console.log("📥 Body:", req.body);
   console.log("✅ Normalizado:", { gusto_id, sucursal_id, nuevoGusto, stock, precio, codigo_barra });
 
-  // Si no vino nada para actualizar
+  // ¿Qué se quiere actualizar?
   const quiereActualizarGusto = (nuevoGusto !== null) || (codigo_barra !== undefined);
   const quiereActualizarStock = (stock !== undefined) || (precio !== undefined);
+
   if (!quiereActualizarGusto && !quiereActualizarStock) {
     return res.status(400).json({ error: "No hay campos para actualizar." });
   }
 
-  // Si quiere actualizar stock/precio, necesitamos sucursal_id
+  // Si se toca stock/precio, necesitamos sucursal_id
   if (quiereActualizarStock && !sucursal_id) {
     return res.status(400).json({ error: "Para actualizar stock o precio se requiere sucursal_id." });
   }
 
-  // Validaciones básicas de tipo si vinieron
+  // Validaciones básicas
   if (precio !== undefined && !Number.isFinite(precio)) {
     return res.status(400).json({ error: "Precio inválido." });
   }
   if (stock !== undefined && !Number.isFinite(stock)) {
     return res.status(400).json({ error: "Stock inválido." });
   }
-  if (nuevoGusto !== null && String(nuevoGusto).trim() === "") {
+  if (nuevoGusto !== null && nuevoGusto === "") {
     return res.status(400).json({ error: "El gusto no puede estar vacío." });
   }
 
   try {
-    // 🔎 Si vino código de barras, validá duplicados
+    // 🔎 Validar código de barras SOLO por sucursal (no global)
     if (codigo_barra !== undefined) {
-      // 1) Chequeo global (que no lo tenga otro gusto distinto)
-      const [dupeGlobal] = await pool.promise().query(
-        "SELECT id FROM gustos WHERE codigo_barra = ? AND id != ?",
-        [codigo_barra, gusto_id]
-      );
-      if (codigo_barra && dupeGlobal.length > 0) {
-        return res.status(400).json({ error: "Este código de barras ya está asignado a otro gusto." });
+      if (!sucursal_id) {
+        return res.status(400).json({ error: "Para actualizar el código de barras se requiere sucursal_id." });
       }
-
-      // 2) Chequeo por sucursal (si nos dieron sucursal)
-      if (sucursal_id) {
-        const [dupeSucursal] = await pool.promise().query(
-          `SELECT g.id
-             FROM gustos g
-             JOIN stock st ON st.gusto_id = g.id
-            WHERE g.codigo_barra = ? AND st.sucursal_id = ? AND g.id != ?`,
-          [codigo_barra, sucursal_id, gusto_id]
-        );
-        if (codigo_barra && dupeSucursal.length > 0) {
-          return res.status(400).json({ error: "Este código de barras ya existe en esta sucursal." });
-        }
+      const [dupeSucursal] = await pool.promise().query(
+        `SELECT g.id
+           FROM gustos g
+           JOIN stock st ON st.gusto_id = g.id
+          WHERE g.codigo_barra = ?
+            AND st.sucursal_id = ?
+            AND g.id != ?`,
+        [codigo_barra, sucursal_id, gusto_id]
+      );
+      if (codigo_barra && dupeSucursal.length > 0) {
+        return res.status(400).json({ error: "Este código de barras ya existe en esta sucursal." });
       }
     }
 
@@ -207,8 +201,8 @@ router.post("/editar/:gusto_id", authenticate, authorizeAdmin, async (req, res) 
     if (quiereActualizarGusto) {
       const sets = [];
       const params = [];
-      if (nuevoGusto !== null)         { sets.push("nombre = ?");       params.push(nuevoGusto); }
-      if (codigo_barra !== undefined)  { sets.push("codigo_barra = ?"); params.push(codigo_barra || null); }
+      if (nuevoGusto !== null)        { sets.push("nombre = ?");       params.push(nuevoGusto); }
+      if (codigo_barra !== undefined) { sets.push("codigo_barra = ?"); params.push(codigo_barra || null); }
 
       if (sets.length) {
         params.push(gusto_id);
@@ -229,7 +223,7 @@ router.post("/editar/:gusto_id", authenticate, authorizeAdmin, async (req, res) 
         .query(`UPDATE stock SET ${sets.join(", ")} WHERE gusto_id = ? AND sucursal_id = ?`, params);
 
       if (upd.affectedRows === 0) {
-        // Si no existe la fila de stock para esa sucursal/gusto, podés decidir crearla:
+        // Si no existe la fila de stock para ese gusto en esa sucursal, podés crearla automáticamente:
         // await pool.promise().query(
         //   "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
         //   [gusto_id, sucursal_id, stock ?? 0, precio ?? 0]
@@ -238,8 +232,28 @@ router.post("/editar/:gusto_id", authenticate, authorizeAdmin, async (req, res) 
       }
     }
 
-    // (Opcional) podés retornar el registro actualizado
-    res.json({ ok: true, mensaje: "Producto actualizado correctamente ✅" });
+    // (Opcional) devolver el registro actualizado
+    const [result] = await pool.promise().query(
+      `SELECT 
+         p.id AS producto_id,
+         p.nombre AS producto_nombre,
+         g.id AS gusto_id,
+         g.nombre AS gusto,
+         g.codigo_barra,
+         st.cantidad AS stock,
+         st.precio AS precio,
+         s.id AS sucursal_id,
+         s.nombre AS sucursal
+       FROM gustos g
+       JOIN productos p ON g.producto_id = p.id
+       JOIN stock st ON st.gusto_id = g.id
+       JOIN sucursales s ON s.id = st.sucursal_id
+      WHERE g.id = ? ${sucursal_id ? "AND s.id = ?" : ""} 
+      LIMIT 1`,
+      sucursal_id ? [gusto_id, sucursal_id] : [gusto_id]
+    );
+
+    res.json({ ok: true, mensaje: "Producto actualizado correctamente ✅", data: result?.[0] ?? null });
   } catch (error) {
     console.error("❌ Error al editar producto:", error.message, error.stack);
     res.status(500).json({ error: "Error al editar producto" });
