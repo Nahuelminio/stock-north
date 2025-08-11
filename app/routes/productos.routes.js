@@ -329,47 +329,40 @@ router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
 router.get("/ranking-productos", authenticate, async (req, res) => {
   const { rol } = req.user;
   const { mes, anio } = req.query;
-
-  if (rol !== "admin") {
+  if (rol !== "admin")
     return res
       .status(403)
       .json({ error: "Acceso denegado: sólo administradores" });
-  }
 
   try {
-    let query = `
+    let sql = `
       SELECT 
         p.nombre AS producto,
         g.nombre AS gusto,
         SUM(v.cantidad) AS total_vendido,
-        SUM(v.cantidad * st.precio) AS total_facturado
+        SUM(v.cantidad * v.precio_unitario) AS total_facturado
       FROM ventas v
       JOIN gustos g ON v.gusto_id = g.id
       JOIN productos p ON g.producto_id = p.id
-      JOIN stock st ON st.gusto_id = g.id AND st.sucursal_id = v.sucursal_id
     `;
-
     const params = [];
-
     if (mes && anio) {
-      query += " WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?";
+      sql += " WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?";
       params.push(mes, anio);
     }
-
-    query += `
+    sql += `
       GROUP BY g.id
       ORDER BY total_vendido DESC
       LIMIT 10
     `;
-
-    const [result] = await pool.promise().query(query, params);
-
-    res.json(result);
-  } catch (error) {
-    console.error("❌ Error al obtener ranking de productos:", error);
+    const [rows] = await pool.promise().query(sql, params);
+    res.json(rows);
+  } catch (e) {
+    console.error("❌ Error ranking productos:", e);
     res.status(500).json({ error: "Error al obtener ranking de productos" });
   }
 });
+
 // 🔵 Verificar si el código de barras ya existe en una sucursal
 router.get("/verificar-codigo/:codigo", authenticate, async (req, res) => {
   const { codigo } = req.params;
