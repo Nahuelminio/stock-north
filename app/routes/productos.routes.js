@@ -421,5 +421,57 @@ router.get("/verificar-codigo", authenticate, async (req, res) => {
 });
 
 
+// 🔵 Pods por sucursal (agrupado) — admite filtros q, sucursal_id, solo_con_stock
+router.get("/pods-por-sucursal", authenticate, async (req, res) => {
+  const { rol, sucursalId } = req.user;
+  let { sucursal_id, q, solo_con_stock } = req.query;
+
+  // por defecto solo mostrar stock > 0 (podes pasar ?solo_con_stock=0 para ver todo)
+  const soloConStock = solo_con_stock === "0" ? false : true;
+
+  const where = [];
+  const params = [];
+
+  if (rol !== "admin") {
+    where.push("s.id = ?");
+    params.push(sucursalId);
+  } else if (sucursal_id) {
+    where.push("s.id = ?");
+    params.push(Number(sucursal_id));
+  }
+
+  if (q) {
+    where.push("(p.nombre LIKE ? OR g.nombre LIKE ? OR g.codigo_barra LIKE ?)");
+    const like = `%${q}%`;
+    params.push(like, like, like);
+  }
+
+  if (soloConStock) {
+    where.push("st.cantidad > 0");
+  }
+
+  const sql = `
+    SELECT
+      s.id AS sucursal_id,
+      s.nombre AS sucursal,
+      CONCAT(p.nombre, ' - ', g.nombre) AS pod,
+      SUM(st.cantidad) AS total
+    FROM productos p
+    JOIN gustos g   ON g.producto_id = p.id
+    JOIN stock  st  ON st.gusto_id   = g.id
+    JOIN sucursales s ON s.id        = st.sucursal_id
+    ${where.length ? "WHERE " + where.join(" AND ") : ""}
+    GROUP BY s.id, g.id
+    ORDER BY s.nombre, pod
+  `;
+
+  try {
+    const [rows] = await pool.promise().query(sql, params);
+    res.json(rows);
+  } catch (e) {
+    console.error("❌ Error en /pods-por-sucursal:", e);
+    res.status(500).json({ error: "Error al obtener pods por sucursal" });
+  }
+});
 
 module.exports = router;
