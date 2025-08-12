@@ -12,7 +12,8 @@ router.post("/vender", authenticate, async (req, res) => {
   const gustoId = Number(req.body.gusto_id);
   const cantidad = Number(req.body.cantidad);
   const sucursalIdBody = Number(req.body.sucursal_id);
-  const sucursalIdFinal = rol === "admin" ? sucursalIdBody : Number(sucursalIdDesdeToken);
+  const sucursalIdFinal =
+    rol === "admin" ? sucursalIdBody : Number(sucursalIdDesdeToken);
 
   // Validaciones de entrada
   if (!Number.isInteger(gustoId) || gustoId <= 0) {
@@ -74,8 +75,6 @@ router.post("/vender", authenticate, async (req, res) => {
   }
 });
 
-
-
 // 🔵 Ventas mensuales (solo de su sucursal, salvo admin)
 router.get("/ventas-mensuales", authenticate, async (req, res) => {
   const { mes, anio } = req.query;
@@ -87,21 +86,23 @@ router.get("/ventas-mensuales", authenticate, async (req, res) => {
   try {
     let sql = `
       SELECT 
+        s.id AS sucursal_id,
         s.nombre AS sucursal,
         SUM(v.cantidad) AS total_ventas,
-        SUM(v.cantidad * v.precio_unitario) AS total_facturado
+        SUM(v.cantidad * COALESCE(v.precio_unitario, st.precio, 0)) AS total_facturado
       FROM ventas v
       JOIN sucursales s ON v.sucursal_id = s.id
+      LEFT JOIN stock st ON st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id
       WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?
     `;
-    const params = [mes, anio];
+    const params = [Number(mes), Number(anio)];
 
     if (rol !== "admin") {
       sql += " AND v.sucursal_id = ?";
-      params.push(sucursalId);
+      params.push(Number(sucursalId));
     }
 
-    sql += " GROUP BY v.sucursal_id";
+    sql += " GROUP BY s.id, s.nombre ORDER BY s.nombre";
     const [rows] = await pool.promise().query(sql, params);
     res.json(rows);
   } catch (e) {
@@ -109,6 +110,7 @@ router.get("/ventas-mensuales", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener ventas mensuales" });
   }
 });
+
 router.get("/historial", authenticate, async (req, res) => {
   const { sucursalId, rol } = req.user; // del token
   const { sucursal_id } = req.query; // filtro opcional para admin
@@ -161,27 +163,38 @@ router.get("/historial", authenticate, async (req, res) => {
 });
 
 module.exports = router;
-router.get("/total-por-sucursal", authenticate, async (req, res) => {
-  const { rol } = req.user;
-  if (rol !== "admin")
-    return res
-      .status(403)
-      .json({ error: "Acceso denegado: sólo administradores" });
+router.get("/ventas-mensuales", authenticate, async (req, res) => {
+  const { mes, anio } = req.query;
+  const { sucursalId, rol } = req.user;
+
+  if (!mes || !anio)
+    return res.status(400).json({ error: "Faltan parámetros mes y año" });
 
   try {
-    const [rows] = await pool.promise().query(`
+    let sql = `
       SELECT 
         s.id AS sucursal_id,
         s.nombre AS sucursal,
-        SUM(v.cantidad * v.precio_unitario) AS total_facturado
+        SUM(v.cantidad) AS total_ventas,
+        SUM(v.cantidad * COALESCE(v.precio_unitario, st.precio, 0)) AS total_facturado
       FROM ventas v
       JOIN sucursales s ON v.sucursal_id = s.id
-      GROUP BY s.id, s.nombre
-    `);
+      LEFT JOIN stock st ON st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id
+      WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?
+    `;
+    const params = [Number(mes), Number(anio)];
+
+    if (rol !== "admin") {
+      sql += " AND v.sucursal_id = ?";
+      params.push(Number(sucursalId));
+    }
+
+    sql += " GROUP BY s.id, s.nombre ORDER BY s.nombre";
+    const [rows] = await pool.promise().query(sql, params);
     res.json(rows);
   } catch (e) {
-    console.error("❌ Error total por sucursal:", e);
-    res.status(500).json({ error: "Error al obtener total de ventas" });
+    console.error("❌ Error ventas mensuales:", e);
+    res.status(500).json({ error: "Error al obtener ventas mensuales" });
   }
 });
 
@@ -221,7 +234,6 @@ router.get("/buscar-por-codigo/:codigo", async (req, res) => {
     res.status(500).json({ error: "Error interno" });
   }
 });
-
 
 /**
  * GET /deuda-por-sucursal
