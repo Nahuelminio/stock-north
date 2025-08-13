@@ -424,9 +424,8 @@ router.get("/verificar-codigo", authenticate, async (req, res) => {
 // 🔵 Pods por sucursal (agrupado) — admite filtros q, sucursal_id, solo_con_stock
 router.get("/pods-por-sucursal", authenticate, async (req, res) => {
   const { rol, sucursalId } = req.user;
-  let { sucursal_id, q, solo_con_stock } = req.query;
+  let { sucursal_id, q, solo_con_stock, agrupar = "modelo" } = req.query;
 
-  // por defecto solo mostrar stock > 0 (podes pasar ?solo_con_stock=0 para ver todo)
   const soloConStock = solo_con_stock === "0" ? false : true;
 
   const where = [];
@@ -434,36 +433,51 @@ router.get("/pods-por-sucursal", authenticate, async (req, res) => {
 
   if (rol !== "admin") {
     where.push("s.id = ?");
-    params.push(sucursalId);
+    params.push(Number(sucursalId));
   } else if (sucursal_id) {
     where.push("s.id = ?");
     params.push(Number(sucursal_id));
   }
 
-  if (q) {
+  if (q && q.trim()) {
+    const like = `%${q.trim()}%`;
     where.push("(p.nombre LIKE ? OR g.nombre LIKE ? OR g.codigo_barra LIKE ?)");
-    const like = `%${q}%`;
     params.push(like, like, like);
   }
 
-  if (soloConStock) {
-    where.push("st.cantidad > 0");
-  }
+  const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
 
-  const sql = `
+  const groupByModelo = `
     SELECT
-      s.id AS sucursal_id,
+      s.id    AS sucursal_id,
       s.nombre AS sucursal,
-      CONCAT(p.nombre, ' - ', g.nombre) AS pod,
+      p.nombre AS pod,                 -- modelo
       SUM(st.cantidad) AS total
     FROM productos p
-    JOIN gustos g   ON g.producto_id = p.id
-    JOIN stock  st  ON st.gusto_id   = g.id
-    JOIN sucursales s ON s.id        = st.sucursal_id
-    ${where.length ? "WHERE " + where.join(" AND ") : ""}
-    GROUP BY s.id, g.id
-    ORDER BY s.nombre, pod
+    JOIN gustos g     ON g.producto_id = p.id
+    JOIN stock  st    ON st.gusto_id   = g.id
+    JOIN sucursales s ON s.id          = st.sucursal_id
+    ${whereSql}
+    GROUP BY s.id, s.nombre, p.id, p.nombre
   `;
+
+  const groupByGusto = `
+    SELECT
+      s.id    AS sucursal_id,
+      s.nombre AS sucursal,
+      CONCAT(p.nombre, ' - ', g.nombre) AS pod, -- modelo + gusto
+      SUM(st.cantidad) AS total
+    FROM productos p
+    JOIN gustos g     ON g.producto_id = p.id
+    JOIN stock  st    ON st.gusto_id   = g.id
+    JOIN sucursales s ON s.id          = st.sucursal_id
+    ${whereSql}
+    GROUP BY s.id, s.nombre, g.id, p.nombre, g.nombre
+  `;
+
+  let sql = agrupar === "gusto" ? groupByGusto : groupByModelo;
+  if (soloConStock) sql += ` HAVING SUM(st.cantidad) > 0`;
+  sql += ` ORDER BY s.nombre, total DESC, pod`;
 
   try {
     const [rows] = await pool.promise().query(sql, params);
@@ -473,5 +487,6 @@ router.get("/pods-por-sucursal", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener pods por sucursal" });
   }
 });
+
 
 module.exports = router;
