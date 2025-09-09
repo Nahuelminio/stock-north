@@ -1,4 +1,6 @@
+// routes/pagos.js
 const express = require("express");
+const crypto = require("crypto");
 const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
@@ -8,7 +10,6 @@ const authenticate = require("../middlewares/authenticate");
 function parseFechaFlexible(fechaStr) {
   if (!fechaStr) return new Date();
   const s = String(fechaStr).trim();
-  // dd/mm/yyyy HH:mm (o con -)
   const m = s.match(
     /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:\s+(\d{1,2}):(\d{2}))?$/
   );
@@ -23,7 +24,6 @@ function parseFechaFlexible(fechaStr) {
   const d = new Date(s);
   return isNaN(d.getTime()) ? new Date() : d;
 }
-
 function normalizarMetodo(m) {
   const t = (m || "").toString().trim().toLowerCase();
   if (/^efec/.test(t) || t === "cash") return "efectivo";
@@ -33,10 +33,83 @@ function normalizarMetodo(m) {
   if (/credit|debito|d[eé]bito|cr[eé]dito|pos|lapos/.test(t)) return "tarjeta";
   return t || "otro";
 }
+const stripAcc = (s) =>
+  String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+const onlyAN = (s) =>
+  stripAcc(s)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+const lastDigits = (s, n = 12) =>
+  String(s || "")
+    .replace(/\D+/g, "")
+    .slice(-n);
+const sha256 = (s) =>
+  crypto.createHash("sha256").update(String(s)).digest("hex");
 
-/* ----------------------- Endpoints existentes tuyos ----------------------- */
+/** Extrae identificadores fuertes desde referencia / ocr_text / parser_json */
+function extractStrongRefs({ referencia, ocr_text, parser_json }) {
+  const out = {};
+  const blob = [
+    referencia,
+    parser_json ? JSON.stringify(parser_json) : "",
+    ocr_text || "",
+  ]
+    .filter(Boolean)
+    .join("  ");
 
-// 🔵 Registrar pago (solo para la sucursal logueada)
+  const mCoelsa = blob.match(/COELSA\s*ID[:\s]*([A-Z0-9\-]+)/i);
+  if (mCoelsa) out.coelsa = onlyAN(mCoelsa[1]);
+
+  const mTx = blob.match(/ID\s+de\s+la\s+transacci[oó]n[:\s]*([A-Z0-9\-]+)/i);
+  if (mTx) out.txid = onlyAN(mTx[1]);
+
+  // Ayuda para heurística
+  const mCbu = blob.match(/\bCBU\b[:\s]*([0-9.\s]+)/i);
+  if (mCbu) out.cbu_tail = lastDigits(mCbu[1], 12);
+
+  // Alias (si viene en parser)
+  if (parser_json && parser_json.alias)
+    out.alias = stripAcc(parser_json.alias).toLowerCase();
+
+  return out;
+}
+
+/** Construye el hash de deduplicación con prioridad por IDs fuertes */
+function buildHash({
+  montoNum,
+  fechaPago,
+  sucursal_id,
+  referencia,
+  ocr_text,
+  parser_json,
+}) {
+  const strong = extractStrongRefs({ referencia, ocr_text, parser_json });
+
+  if (strong.coelsa)
+    return { hash: sha256(`COELSA|${strong.coelsa}`), mode: "COELSA" };
+  if (strong.txid) return { hash: sha256(`TXID|${strong.txid}`), mode: "TXID" };
+
+  // Heurística: ventana de 10 minutos + huella del pagador
+  const bucket = Math.floor(+fechaPago / (10 * 60 * 1000));
+  const payerFp = sha256(
+    [
+      lastDigits(strong.cbu_tail || parser_json?.cbu_cvu || referencia, 12),
+      onlyAN(strong.alias || ""),
+    ].join("|")
+  );
+  return {
+    hash: sha256(
+      ["HEU", montoNum, sucursal_id || 0, bucket, payerFp].join("|")
+    ),
+    mode: "HEU",
+  };
+}
+
+/* ----------------------- Endpoints existentes ----------------------- */
+
+// 🔵 Registrar pago (sucursal logueada)
 router.post("/registrar-pago", authenticate, async (req, res) => {
   const { sucursal_id, metodo, monto } = req.body;
   if (
@@ -68,26 +141,19 @@ router.post("/registrar-pago", authenticate, async (req, res) => {
 router.get("/historial-pagos", authenticate, async (req, res) => {
   const { fecha_inicio, fecha_fin } = req.query;
   const { sucursalId, rol } = req.user;
-
   try {
     let query = `
       SELECT 
-        p.id,
-        s.nombre AS sucursal,
-        p.metodo,
-        p.monto,
-        p.fecha
+        p.id, s.nombre AS sucursal, p.metodo, p.monto, p.fecha
       FROM pagos p
       JOIN sucursales s ON p.sucursal_id = s.id
       WHERE 1=1
     `;
     const params = [];
-
     if (rol !== "admin") {
       query += " AND p.sucursal_id = ?";
       params.push(sucursalId);
     }
-
     if (fecha_inicio && fecha_fin) {
       query += " AND DATE(p.fecha) BETWEEN ? AND ?";
       params.push(fecha_inicio, fecha_fin);
@@ -98,7 +164,6 @@ router.get("/historial-pagos", authenticate, async (req, res) => {
       query += " AND DATE(p.fecha) <= ?";
       params.push(fecha_fin);
     }
-
     query += " ORDER BY p.fecha DESC";
 
     const [results] = await pool.promise().query(query, params);
@@ -109,22 +174,16 @@ router.get("/historial-pagos", authenticate, async (req, res) => {
   }
 });
 
-// 🔵 Total de pagos por sucursal (solo para admin)
+// 🔵 Total pagos por sucursal (admin)
 router.get("/pagos-por-sucursal", authenticate, async (req, res) => {
   const { rol } = req.user;
-
-  if (rol !== "admin") {
+  if (rol !== "admin")
     return res
       .status(403)
       .json({ error: "Acceso denegado: sólo administradores" });
-  }
-
   try {
     const [result] = await pool.promise().query(`
-      SELECT 
-        s.id AS sucursal_id,
-        s.nombre AS sucursal,
-        IFNULL(SUM(p.monto), 0) AS total_pagado
+      SELECT s.id AS sucursal_id, s.nombre AS sucursal, IFNULL(SUM(p.monto), 0) AS total_pagado
       FROM sucursales s
       LEFT JOIN pagos p ON p.sucursal_id = s.id
       GROUP BY s.id, s.nombre
@@ -136,16 +195,13 @@ router.get("/pagos-por-sucursal", authenticate, async (req, res) => {
   }
 });
 
-// 🔵 Resumen financiero: facturado vs pagado (solo admin)
+// 🔵 Resumen financiero (admin)
 router.get("/resumen-pagos", authenticate, async (req, res) => {
   const { rol } = req.user;
-
-  if (rol !== "admin") {
+  if (rol !== "admin")
     return res
       .status(403)
       .json({ error: "Acceso denegado: sólo administradores" });
-  }
-
   try {
     const [resumen] = await pool.promise().query(`
       SELECT 
@@ -156,24 +212,18 @@ router.get("/resumen-pagos", authenticate, async (req, res) => {
           (COALESCE(v.total_facturado, 0) - COALESCE(p.total_pagado, 0)) AS total_pendiente
       FROM sucursales s
       LEFT JOIN (
-          SELECT 
-              v.sucursal_id, 
-              SUM(v.cantidad * st.precio) AS total_facturado
+          SELECT v.sucursal_id, SUM(v.cantidad * st.precio) AS total_facturado
           FROM ventas v
-          JOIN stock st 
-              ON v.gusto_id = st.gusto_id AND v.sucursal_id = st.sucursal_id
+          JOIN stock st ON v.gusto_id = st.gusto_id AND v.sucursal_id = st.sucursal_id
           GROUP BY v.sucursal_id
       ) v ON s.id = v.sucursal_id
       LEFT JOIN (
-          SELECT 
-              sucursal_id, 
-              SUM(monto) AS total_pagado
+          SELECT sucursal_id, SUM(monto) AS total_pagado
           FROM pagos
           GROUP BY sucursal_id
       ) p ON s.id = p.sucursal_id
       ORDER BY s.nombre
     `);
-
     res.json(resumen);
   } catch (error) {
     console.error("❌ Error al obtener resumen financiero:", error);
@@ -181,34 +231,26 @@ router.get("/resumen-pagos", authenticate, async (req, res) => {
   }
 });
 
-// 🔵 Resumen financiero solo para SUCURSAL logueada
+// 🔵 Resumen financiero por sucursal (sucursal logueada)
 router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
   const { sucursalId } = req.user;
-
   try {
     const [resultado] = await pool.promise().query(
       `
-      SELECT
-        s.id AS sucursal_id,
-        s.nombre AS sucursal,
-        COALESCE(f.total_facturado, 0) AS total_facturado,
-        COALESCE(p.total_pagado, 0) AS total_pagado,
-        (COALESCE(f.total_facturado, 0) - COALESCE(p.total_pagado, 0)) AS deuda
+      SELECT s.id AS sucursal_id, s.nombre AS sucursal,
+             COALESCE(f.total_facturado, 0) AS total_facturado,
+             COALESCE(p.total_pagado, 0) AS total_pagado,
+             (COALESCE(f.total_facturado, 0) - COALESCE(p.total_pagado, 0)) AS deuda
       FROM sucursales s
       LEFT JOIN (
-        SELECT 
-          v.sucursal_id, 
-          SUM(v.cantidad * st.precio) AS total_facturado
+        SELECT v.sucursal_id, SUM(v.cantidad * st.precio) AS total_facturado
         FROM ventas v
-        JOIN stock st 
-          ON v.gusto_id = st.gusto_id AND v.sucursal_id = st.sucursal_id
+        JOIN stock st ON v.gusto_id = st.gusto_id AND v.sucursal_id = st.sucursal_id
         WHERE v.sucursal_id = ?
         GROUP BY v.sucursal_id
       ) f ON s.id = f.sucursal_id
       LEFT JOIN (
-        SELECT 
-          sucursal_id,
-          SUM(monto) AS total_pagado
+        SELECT sucursal_id, SUM(monto) AS total_pagado
         FROM pagos
         WHERE sucursal_id = ?
         GROUP BY sucursal_id
@@ -218,10 +260,8 @@ router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
       [sucursalId, sucursalId, sucursalId]
     );
 
-    if (resultado.length === 0) {
+    if (resultado.length === 0)
       return res.status(404).json({ error: "Sucursal no encontrada" });
-    }
-
     res.json(resultado[0]);
   } catch (error) {
     console.error("❌ Error al obtener resumen financiero de sucursal:", error);
@@ -256,7 +296,6 @@ router.post("/pagos/ingresar-ocr", authenticate, async (req, res) => {
       confirmado = false,
     } = req.body;
 
-    // Validaciones
     const montoNum = Number(monto);
     if (!montoNum || isNaN(montoNum) || montoNum <= 0) {
       conn.release();
@@ -264,17 +303,25 @@ router.post("/pagos/ingresar-ocr", authenticate, async (req, res) => {
     }
     const metodoNorm = normalizarMetodo(metodo);
     const fechaPago = parseFechaFlexible(fecha);
-
-    // Estado según confirmación
-    let estado = confirmado ? "ok" : "needs_review";
     const sucId = sucursal_id || 0;
+    const estado = confirmado ? "ok" : "needs_review";
 
-    // Deduplicación (por día + referencia + sucursal)
+    // --- dedup mejorado (prioriza IDs fuertes; luego heurística) ---
+    const { hash } = buildHash({
+      montoNum,
+      fechaPago,
+      sucursal_id: sucId,
+      referencia,
+      ocr_text,
+      parser_json,
+    });
+    const hash_unico = hash;
+
+    // ¿Existe?
     const [dup] = await conn.query(
-      'SELECT id FROM pagos WHERE hash_unico = SHA2(CONCAT(?, "|", DATE(?), "|", COALESCE(?, ""), "|", ?), 256) LIMIT 1',
-      [montoNum, fechaPago, referencia || "", sucId]
+      "SELECT id FROM pagos WHERE hash_unico = ? LIMIT 1",
+      [hash_unico]
     );
-
     if (dup.length) {
       const pago_id = dup[0].id;
       await conn.query(
@@ -296,7 +343,7 @@ router.post("/pagos/ingresar-ocr", authenticate, async (req, res) => {
 
     const [ins] = await conn.query(
       `INSERT INTO pagos (sucursal_id, metodo, monto, fecha, referencia, imagen_url, estado, hash_unico)
-       VALUES (?, ?, ?, ?, ?, ?, ?, SHA2(CONCAT(?, "|", DATE(?), "|", COALESCE(?, ""), "|", ?), 256))`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sucursal_id || null,
         metodoNorm,
@@ -305,14 +352,9 @@ router.post("/pagos/ingresar-ocr", authenticate, async (req, res) => {
         referencia || null,
         imagen_url || null,
         estado,
-        // hash params
-        montoNum,
-        fechaPago,
-        referencia || "",
-        sucId,
+        hash_unico,
       ]
     );
-
     const pago_id = ins.insertId;
 
     await conn.query(
@@ -347,9 +389,13 @@ router.post("/pagos/ingresar-ocr", authenticate, async (req, res) => {
 
 // === PATCH /pagos/:id/revisar (admin)
 router.patch("/pagos/:id/revisar", authenticate, async (req, res) => {
+  const conn = await pool.promise().getConnection();
   try {
     const { rol } = req.user;
-    if (rol !== "admin") return res.status(403).json({ error: "Sólo admin" });
+    if (rol !== "admin") {
+      conn.release();
+      return res.status(403).json({ error: "Sólo admin" });
+    }
 
     const { id } = req.params;
     const {
@@ -360,65 +406,72 @@ router.patch("/pagos/:id/revisar", authenticate, async (req, res) => {
       referencia,
       imagen_url,
       estado = "ok",
+      ocr_text, // opcional para recalcular hash si se corrige
+      parser_json, // opcional idem
     } = req.body;
 
-    const campos = [];
-    const vals = [];
-
-    if (sucursal_id !== undefined) {
-      campos.push("sucursal_id = ?");
-      vals.push(sucursal_id || null);
-    }
-    if (metodo !== undefined) {
-      campos.push("metodo = ?");
-      vals.push(normalizarMetodo(metodo));
-    }
-    if (monto !== undefined) {
-      const n = Number(monto);
-      if (!n || isNaN(n) || n <= 0)
-        return res.status(400).json({ error: "Monto inválido" });
-      campos.push("monto = ?");
-      vals.push(n);
-    }
-    if (fecha !== undefined) {
-      const f = parseFechaFlexible(fecha);
-      campos.push("fecha = ?");
-      vals.push(f);
-    }
-    if (referencia !== undefined) {
-      campos.push("referencia = ?");
-      vals.push(referencia || null);
-    }
-    if (imagen_url !== undefined) {
-      campos.push("imagen_url = ?");
-      vals.push(imagen_url || null);
-    }
-    if (estado !== undefined) {
-      campos.push("estado = ?");
-      vals.push(estado || "ok");
+    // Traer pago actual + último raw_ocr (por si no mandan ocr_text/parser_json)
+    const [[pago]] = await conn.query("SELECT * FROM pagos WHERE id = ?", [id]);
+    if (!pago) {
+      conn.release();
+      return res.status(404).json({ error: "Pago no encontrado" });
     }
 
-    if (!campos.length)
-      return res.status(400).json({ error: "Nada para actualizar" });
+    const [[raw]] = await conn.query(
+      "SELECT * FROM pagos_raw_ocr WHERE pago_id = ? ORDER BY id DESC LIMIT 1",
+      [id]
+    );
 
-    // Recalcular hash si podrían haber cambiado campos clave
-    const recalcularHash =
-      sucursal_id !== undefined ||
-      monto !== undefined ||
-      fecha !== undefined ||
-      referencia !== undefined;
-    if (recalcularHash) {
-      campos.push(
-        `hash_unico = SHA2(CONCAT(monto, "|", DATE(fecha), "|", COALESCE(referencia, ""), "|", COALESCE(sucursal_id,0)), 256)`
-      );
+    const nuevo = {
+      sucursal_id: sucursal_id !== undefined ? sucursal_id : pago.sucursal_id,
+      metodo: metodo !== undefined ? normalizarMetodo(metodo) : pago.metodo,
+      monto: monto !== undefined ? Number(monto) : Number(pago.monto),
+      fecha:
+        fecha !== undefined ? parseFechaFlexible(fecha) : new Date(pago.fecha),
+      referencia: referencia !== undefined ? referencia : pago.referencia,
+      imagen_url: imagen_url !== undefined ? imagen_url : pago.imagen_url,
+      estado: estado !== undefined ? estado : pago.estado,
+      ocr_text: ocr_text !== undefined ? ocr_text : raw?.ocr_text || null,
+      parser_json:
+        parser_json !== undefined ? parser_json : raw?.parser_json || null,
+    };
+
+    if (!nuevo.monto || isNaN(nuevo.monto) || nuevo.monto <= 0) {
+      conn.release();
+      return res.status(400).json({ error: "Monto inválido" });
     }
 
-    const sql = `UPDATE pagos SET ${campos.join(", ")} WHERE id = ?`;
-    vals.push(id);
+    // Recalcular hash con la misma lógica
+    const { hash: hash_unico } = buildHash({
+      montoNum: nuevo.monto,
+      fechaPago: nuevo.fecha,
+      sucursal_id: nuevo.sucursal_id || 0,
+      referencia: nuevo.referencia,
+      ocr_text: nuevo.ocr_text,
+      parser_json: nuevo.parser_json,
+    });
 
-    await pool.promise().query(sql, vals);
+    await conn.query(
+      `UPDATE pagos
+       SET sucursal_id=?, metodo=?, monto=?, fecha=?, referencia=?, imagen_url=?, estado=?, hash_unico=?
+       WHERE id=?`,
+      [
+        nuevo.sucursal_id || null,
+        nuevo.metodo,
+        nuevo.monto,
+        nuevo.fecha,
+        nuevo.referencia || null,
+        nuevo.imagen_url || null,
+        nuevo.estado,
+        hash_unico,
+        id,
+      ]
+    );
+
+    conn.release();
     res.json({ mensaje: "✅ Pago actualizado" });
   } catch (e) {
+    conn.release();
     console.error("❌ Error en PATCH /pagos/:id/revisar:", e);
     res.status(500).json({ error: "Error al actualizar pago" });
   }
