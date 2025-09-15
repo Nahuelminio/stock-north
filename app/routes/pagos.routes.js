@@ -109,33 +109,36 @@ function buildHash({
 
 /* ----------------------- Endpoints existentes ----------------------- */
 
-// 🔵 Registrar pago (sucursal logueada)
+// routes/pagos.js
 router.post("/registrar-pago", authenticate, async (req, res) => {
-  const { sucursal_id, metodo, monto } = req.body;
-  if (
-    !sucursal_id ||
-    !metodo ||
-    !monto ||
-    isNaN(Number(monto)) ||
-    Number(monto) <= 0
-  ) {
-    return res
-      .status(400)
-      .json({ error: "Faltan datos del pago o monto inválido" });
-  }
   try {
-    await pool
-      .promise()
-      .query(
-        "INSERT INTO pagos (sucursal_id, metodo, monto, fecha) VALUES (?, ?, ?, NOW())",
-        [sucursal_id, normalizarMetodo(metodo), Number(monto)]
-      );
+    const { rol } = req.user || {};
+    if (rol !== "admin") {
+      return res.status(403).json({ error: "Acceso denegado: sólo administradores" });
+    }
+
+    const { sucursal_id, metodo, monto } = req.body || {};
+    const mnum = Number(monto);
+
+    if (!sucursal_id || !metodo || !mnum || isNaN(mnum) || mnum <= 0) {
+      return res.status(400).json({ error: "Faltan datos del pago o monto inválido" });
+    }
+
+    await pool.promise().query(
+      "INSERT INTO pagos (sucursal_id, metodo, monto, fecha) VALUES (?, ?, ?, NOW())",
+      [Number(sucursal_id), normalizarMetodo(metodo), mnum]
+    );
+
     res.json({ mensaje: "✅ Pago registrado" });
   } catch (error) {
     console.error("❌ Error al registrar pago:", error);
-    res.status(500).json({ error: "Error al registrar el pago" });
+    res.status(500).json({
+      error: "Error al registrar el pago",
+      detalle: String(error?.sqlMessage || error?.message || error)
+    });
   }
 });
+
 
 // 🔵 Historial de pagos
 router.get("/historial-pagos", authenticate, async (req, res) => {
