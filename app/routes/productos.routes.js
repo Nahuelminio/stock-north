@@ -41,53 +41,28 @@ router.get("/", authenticate, async (req, res) => {
 });
 // GET /productos
 // Soporta: ?activo=1&categoria=...&buscar=...
-router.get("/productos", async (req, res) => {
+// GET /productos — simple y directo
+router.get("/productos", async (_req, res) => {
   try {
-    const { activo, categoria, buscar } = req.query;
-
-    let sql = `
+    const [rows] = await pool.promise().query(`
       SELECT
         id,
         nombre,
         categoria,
         precio,
         descripcion,
-        imagen_url AS imagen,   -- 👈 alias para que el front la vea como "imagen"
+        COALESCE(imagen_url, imagen) AS imagen,  -- por si la columna varía
         stock,
-        activo,
-        destacado,
-        tags
+        destacado
       FROM productos
-      WHERE 1=1
-    `;
-
-    const params = [];
-    if (activo !== undefined) {
-      sql += " AND activo = ?";
-      params.push(Number(activo) ? 1 : 0);
-    }
-    if (categoria) {
-      sql += " AND categoria = ?";
-      params.push(categoria);
-    }
-    if (buscar) {
-      sql += " AND (LOWER(nombre) LIKE ? OR LOWER(descripcion) LIKE ?)";
-      params.push(`%${buscar.toLowerCase()}%`, `%${buscar.toLowerCase()}%`);
-    }
-
-    sql += " ORDER BY destacado DESC, nombre ASC";
-
-    const [rows] = await pool.promise().query(sql, params);
-
-    // Cache CDN 60s y navegador 30s
-    res.set(
-      "Cache-Control",
-      "public, s-maxage=60, stale-while-revalidate=300, max-age=30"
-    );
+      WHERE activo = 1
+      ORDER BY destacado DESC, nombre ASC
+      LIMIT 200
+    `);
     res.json(rows);
   } catch (err) {
-    console.error("GET /productos error:", err);
-    res.status(500).json({ error: "Error obteniendo productos" });
+    console.error("GET /productos:", err.message);
+    res.status(500).json({ error: "No se pudieron traer los productos" });
   }
 });
 
