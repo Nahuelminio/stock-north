@@ -39,6 +39,29 @@ router.get("/", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener productos" });
   }
 });
+// GET /productos
+// Soporta: ?activo=1&categoria=...&buscar=...
+router.get("/productos", async (req, res) => {
+  const { activo, categoria, buscar } = req.query;
+  let sql = `
+    SELECT id, nombre, categoria, precio, descripcion, imagen_url, stock, activo, destacado, tags
+    FROM productos
+    WHERE 1=1
+  `;
+  const params = [];
+  if (activo !== undefined) { sql += " AND activo = ?"; params.push(Number(activo) ? 1 : 0); }
+  if (categoria) { sql += " AND categoria = ?"; params.push(categoria); }
+  if (buscar) {
+    sql += " AND (LOWER(nombre) LIKE ? OR LOWER(descripcion) LIKE ?)";
+    params.push(`%${buscar.toLowerCase()}%`, `%${buscar.toLowerCase()}%`);
+  }
+  sql += " ORDER BY destacado DESC, nombre ASC";
+
+  const [rows] = await pool.promise().query(sql, params);
+  // Cache CDN 60s y navegador 30s
+  res.set("Cache-Control", "public, s-maxage=60, stale-while-revalidate=300, max-age=30");
+  res.json(rows);
+});
 
 // 🔵 Agregar producto (solo admin)
 router.post("/agregar", authenticate, authorizeAdmin, async (req, res) => {
