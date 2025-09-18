@@ -42,23 +42,27 @@ router.get("/", authenticate, async (req, res) => {
 // GET /productos
 // Soporta: ?activo=1&categoria=...&buscar=...
 // GET /productos — simple y directo
+// Público y simple: devuelve una fila por GUSTO con stock total y un precio de referencia
 router.get("/productos", async (_req, res) => {
   try {
     const [rows] = await pool.promise().query(`
       SELECT
-        id,
-        nombre,
-        categoria,
-        precio,
-        descripcion,
-        COALESCE(imagen_url, imagen) AS imagen,  -- por si la columna varía
-        stock,
-        destacado
-      FROM productos
-      WHERE activo = 1
-      ORDER BY destacado DESC, nombre ASC
-      LIMIT 200
+        g.id AS id,
+        CONCAT(p.nombre, ' - ', g.nombre) AS nombre,     -- nombre mostrado en el catálogo
+        NULL AS descripcion,                              -- si no tenés, devolvemos null
+        NULL AS categoria,                                -- opcional
+        COALESCE(g.imagen_url, p.imagen_url, p.imagen) AS imagen,
+        SUM(st.cantidad) AS stock,                        -- stock total (todas las sucursales)
+        MAX(st.precio) AS precio,                         -- precio de referencia (tomá MAX/MIN/AVG)
+        0 AS destacado                                    -- opcional para el front
+      FROM productos p
+      JOIN gustos g ON g.producto_id = p.id
+      JOIN stock  st ON st.gusto_id   = g.id
+      GROUP BY g.id, p.nombre, g.nombre, imagen
+      ORDER BY p.nombre ASC, g.nombre ASC
+      LIMIT 500
     `);
+
     res.json(rows);
   } catch (err) {
     console.error("GET /productos:", err.message);
