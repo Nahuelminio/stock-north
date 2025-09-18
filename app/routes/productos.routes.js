@@ -43,29 +43,37 @@ router.get("/", authenticate, async (req, res) => {
 // Soporta: ?activo=1&categoria=...&buscar=...
 // GET /productos — simple y directo
 // Público y simple: devuelve una fila por GUSTO con stock total y un precio de referencia
+// GET /productos — público
 router.get("/productos", async (_req, res) => {
   try {
-    const [rows] = await pool.promise().query(`
+    const sql = `
       SELECT
         g.id AS id,
-        CONCAT(p.nombre, ' - ', g.nombre) AS nombre,     -- nombre mostrado en el catálogo
-        NULL AS descripcion,                              -- si no tenés, devolvemos null
-        NULL AS categoria,                                -- opcional
+        CONCAT(p.nombre, ' - ', g.nombre) AS nombre,
+        NULL AS descripcion,
+        NULL AS categoria,
         COALESCE(g.imagen_url, p.imagen_url, p.imagen) AS imagen,
-        SUM(st.cantidad) AS stock,                        -- stock total (todas las sucursales)
-        MAX(st.precio) AS precio,                         -- precio de referencia (tomá MAX/MIN/AVG)
-        0 AS destacado                                    -- opcional para el front
-      FROM productos p
-      JOIN gustos g ON g.producto_id = p.id
-      JOIN stock  st ON st.gusto_id   = g.id
-      GROUP BY g.id, p.nombre, g.nombre, imagen
+        agg.stock,
+        agg.precio,
+        0 AS destacado
+      FROM gustos g
+      JOIN productos p      ON p.id = g.producto_id
+      JOIN (
+        SELECT
+          st.gusto_id,
+          SUM(st.cantidad) AS stock,
+          MAX(st.precio)   AS precio
+        FROM stock st
+        GROUP BY st.gusto_id
+      ) agg                 ON agg.gusto_id = g.id
       ORDER BY p.nombre ASC, g.nombre ASC
-      LIMIT 500
-    `);
+      LIMIT 500;
+    `;
 
+    const [rows] = await pool.promise().query(sql);
     res.json(rows);
   } catch (err) {
-    console.error("GET /productos:", err.message);
+    console.error("GET /productos error:", err.sqlMessage || err.message);
     res.status(500).json({ error: "No se pudieron traer los productos" });
   }
 });
