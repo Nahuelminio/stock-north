@@ -202,9 +202,7 @@ router.get("/pagos-por-sucursal", authenticate, async (req, res) => {
 router.get("/resumen-pagos", authenticate, async (req, res) => {
   const { rol } = req.user;
   if (rol !== "admin")
-    return res
-      .status(403)
-      .json({ error: "Acceso denegado: sólo administradores" });
+    return res.status(403).json({ error: "Acceso denegado: sólo administradores" });
   try {
     const [resumen] = await pool.promise().query(`
       SELECT 
@@ -215,14 +213,14 @@ router.get("/resumen-pagos", authenticate, async (req, res) => {
           (COALESCE(v.total_facturado, 0) - COALESCE(p.total_pagado, 0)) AS total_pendiente
       FROM sucursales s
       LEFT JOIN (
-          SELECT v.sucursal_id, SUM(v.cantidad * st.precio) AS total_facturado
+          SELECT v.sucursal_id, SUM(v.cantidad * v.precio_unitario) AS total_facturado
           FROM ventas v
-          JOIN stock st ON v.gusto_id = st.gusto_id AND v.sucursal_id = st.sucursal_id
           GROUP BY v.sucursal_id
       ) v ON s.id = v.sucursal_id
       LEFT JOIN (
           SELECT sucursal_id, SUM(monto) AS total_pagado
           FROM pagos
+          WHERE estado = 'ok'
           GROUP BY sucursal_id
       ) p ON s.id = p.sucursal_id
       ORDER BY s.nombre
@@ -235,35 +233,37 @@ router.get("/resumen-pagos", authenticate, async (req, res) => {
 });
 
 // 🔵 Resumen financiero por sucursal (sucursal logueada)
+// 🔵 Resumen financiero por sucursal (sucursal logueada)
 router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
   const { sucursalId } = req.user;
   try {
     const [resultado] = await pool.promise().query(
       `
-      SELECT s.id AS sucursal_id, s.nombre AS sucursal,
-             COALESCE(f.total_facturado, 0) AS total_facturado,
-             COALESCE(p.total_pagado, 0) AS total_pagado,
-             (COALESCE(f.total_facturado, 0) - COALESCE(p.total_pagado, 0)) AS deuda
+      SELECT 
+        s.id AS sucursal_id, 
+        s.nombre AS sucursal,
+        COALESCE(f.total_facturado, 0) AS total_facturado,
+        COALESCE(p.total_pagado, 0) AS total_pagado,
+        (COALESCE(f.total_facturado, 0) - COALESCE(p.total_pagado, 0)) AS deuda
       FROM sucursales s
       LEFT JOIN (
-        SELECT v.sucursal_id, SUM(v.cantidad * st.precio) AS total_facturado
+        SELECT v.sucursal_id, SUM(v.cantidad * v.precio_unitario) AS total_facturado
         FROM ventas v
-        JOIN stock st ON v.gusto_id = st.gusto_id AND v.sucursal_id = st.sucursal_id
         WHERE v.sucursal_id = ?
         GROUP BY v.sucursal_id
       ) f ON s.id = f.sucursal_id
       LEFT JOIN (
         SELECT sucursal_id, SUM(monto) AS total_pagado
         FROM pagos
-        WHERE sucursal_id = ?
+        WHERE sucursal_id = ? AND estado = 'ok'
         GROUP BY sucursal_id
       ) p ON s.id = p.sucursal_id
       WHERE s.id = ?
-    `,
+      `,
       [sucursalId, sucursalId, sucursalId]
     );
 
-    if (resultado.length === 0)
+    if (!resultado.length)
       return res.status(404).json({ error: "Sucursal no encontrada" });
     res.json(resultado[0]);
   } catch (error) {
@@ -271,6 +271,7 @@ router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener resumen financiero" });
   }
 });
+
 
 /* ----------------------- OCR: Insert + Dedup + Raw ----------------------- */
 
