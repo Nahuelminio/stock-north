@@ -43,40 +43,83 @@ router.get("/", authenticate, async (req, res) => {
 // Soporta: ?activo=1&categoria=...&buscar=...
 // GET /productos — simple y directo
 // Público y simple: devuelve una fila por GUSTO con stock total y un precio de referencia
-// GET /productos — público
-router.get("/productos", async (_req, res) => {
+// GET /productos — catálogo público (mejorado)
+// Query params opcionales:
+//   ?page=1&size=50              ← paginación (por defecto page=1, size=100)
+//   ?inStock=1                   ← solo con stock > 0
+//   ?q=elfbar%20watermelon       ← búsqueda simple en nombre producto/gusto
+//   ?order=nombre|precio|stock   ← campo de orden (default: nombre)
+//   ?dir=asc|desc                ← dirección (default: asc)
+router.get("/productos", async (req, res) => {
   try {
+    // ---- parámetros seguros por defecto
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const size = Math.min(Math.max(parseInt(req.query.size) || 100, 1), 500); // máx 500
+    const offset = (page - 1) * size;
+
+    const inStock = req.query.inStock === "1";
+    const q = (req.query.q || "").trim();
+
+    const allowedOrder = { nombre: "nombre", precio: "precio", stock: "stock" };
+    const orderKey = allowedOrder[req.query.order] || "nombre";
+    const dir = (req.query.dir || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
+
+    // ---- filtros dinámicos
+    const where = [];
+    const params = [];
+
+    if (q) {
+      // búsqueda básica por producto o gusto
+      where.push("(p.nombre LIKE ? OR g.nombre LIKE ?)");
+      params.push(`%${q}%`, `%${q}%`);
+    }
+
+    // ---- SQL
+    // 1) agregamos stock/precio por gusto
+    // 2) unimos con gustos+productos
+    // 3) “limpiamos” tabs y espacios extra en los nombres
+    // 4) casteamos a tipos numéricos reales
+    // 5) orden + paginación
     const sql = `
-      SELECT
-        g.id AS id,
-        CONCAT(p.nombre, ' - ', g.nombre) AS nombre,
-        NULL AS descripcion,
-        NULL AS categoria,
-        COALESCE(g.imagen_url, p.imagen_url, p.imagen) AS imagen,
-        agg.stock,
-        agg.precio,
-        0 AS destacado
-      FROM gustos g
-      JOIN productos p      ON p.id = g.producto_id
-      JOIN (
+      WITH agg AS (
         SELECT
           st.gusto_id,
-          SUM(st.cantidad) AS stock,
-          MAX(st.precio)   AS precio
+          SUM(st.cantidad)                AS stock_raw,
+          MAX(st.precio)                  AS precio_raw
         FROM stock st
         GROUP BY st.gusto_id
-      ) agg                 ON agg.gusto_id = g.id
-      ORDER BY p.nombre ASC, g.nombre ASC
-      LIMIT 500;
+      )
+      SELECT
+        g.id AS id,
+        -- limpiamos tabs (CHAR(9)) y múltiples espacios en ambos nombres:
+        CONCAT(
+          TRIM(REPLACE(REPLACE(p.nombre, CHAR(9), ' '), '  ', ' ')),
+          ' - ',
+          TRIM(REPLACE(REPLACE(g.nombre, CHAR(9), ' '), '  ', ' '))
+        ) AS nombre,
+        CAST(agg.stock_raw AS UNSIGNED)     AS stock,
+        CAST(agg.precio_raw AS DECIMAL(10,2)) AS precio
+      FROM gustos g
+      JOIN productos p ON p.id = g.producto_id
+      JOIN agg        ON agg.gusto_id = g.id
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ${inStock ? `HAVING stock > 0` : ""}
+      ORDER BY ${orderKey} ${dir}, id ASC
+      LIMIT ? OFFSET ?;
     `;
 
-    const [rows] = await pool.promise().query(sql);
+    const [rows] = await pool.promise().query(sql, [...params, size, offset]);
+
+    // Nota: si querés total de registros para armar paginación completa,
+    // puedo agregarte un endpoint /productos/count o devolver X-Total-Count con otra consulta.
+
     res.json(rows);
   } catch (err) {
     console.error("GET /productos error:", err.sqlMessage || err.message);
     res.status(500).json({ error: "No se pudieron traer los productos" });
   }
 });
+
 
 
 // 🔵 Agregar producto (solo admin)
