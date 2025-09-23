@@ -7,7 +7,12 @@ const cors = require("cors");
 // 🔐 Configuración de CORS
 app.use(
   cors({
-    origin: ["http://localhost:5173", "https://socknorth.net"], // ✅ agregá tu dominio de producción
+    origin: [
+      "http://localhost:5173",
+      "https://socknorth.net",
+      "http://localhost:3001",
+      "http://192.168.0.13:3001",
+    ], // ✅ agregá tu dominio de producción
     credentials: true,
   })
 );
@@ -26,6 +31,8 @@ app.use("/", require("./routes/historial.routes"));
 app.use("/sucursales", require("./routes/sucursales.routes"));
 app.use("/", require("./routes/importar.routes"));
 app.use("/admin/stock", require("./routes/adminStock.routes"));
+app.use("/", require("./routes/public.routes"));
+
 
 
 // 🔵 Nueva ruta para Registro y Login

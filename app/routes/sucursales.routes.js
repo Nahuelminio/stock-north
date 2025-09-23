@@ -1,8 +1,12 @@
 const express = require("express");
 const router = express.Router();
 const authenticate = require("../middlewares/authenticate");
+const cors = require("cors");
+const publicCors = cors({ origin: "*", credentials: false });
 
 const pool = require("../db");
+// GET /sucursales-publico  -> [{id, nombre}]
+
 
 // GET /sucursales
 router.get("/", async (req, res) => {
