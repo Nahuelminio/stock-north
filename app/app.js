@@ -12,6 +12,7 @@ app.use(
       "https://socknorth.net",
       "http://localhost:3001",
       "http://192.168.0.13:3001",
+      "https://chocolate-donkey-945086.hostingersite.com/",
     ], // ✅ agregá tu dominio de producción
     credentials: true,
   })
