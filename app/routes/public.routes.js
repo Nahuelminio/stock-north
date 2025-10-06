@@ -7,6 +7,22 @@ const pool = require("../db");
 // CORS SOLO para endpoints públicos
 const publicCors = cors({ origin: "*", credentials: false });
 
+/* =========================
+   Helpers
+========================= */
+function cleanPhone(raw) {
+  // Acepta dígitos y '+'
+  return String(raw || "").replace(/[^\d+]/g, "");
+}
+function toNullOrTrim(v) {
+  const s = (v ?? "").toString().trim();
+  return s ? s : null;
+}
+
+/* =========================
+   Endpoints públicos
+========================= */
+
 /**
  * GET /public/sucursales
  * Lista pública de sucursales: [{ id, nombre }]
@@ -77,21 +93,13 @@ router.get("/public/productos", publicCors, async (req, res) => {
     res.status(500).json({ error: "No se pudieron traer los productos" });
   }
 });
-/**
- * Helpers
- */
-function cleanPhone(raw) {
-  return String(raw || "").replace(/[^\d+]/g, "");
-}
-function toNullOrTrim(v) {
-  const s = (v ?? "").toString().trim();
-  return s ? s : null;
-}
 
 /**
  * POST /public/clientes
- * Guarda el lead del formulario de Comunidad North.
+ * Guarda el lead/cliente del formulario de Comunidad North.
  * Body: { nombre, telefono, sucursal (nombre opcional), nota, acepta, source? }
+ * - Inserta con estado='nuevo'
+ * - Notifica a n8n via webhook (si está configurado N8N_WEBHOOK_URL_NEW_CLIENT)
  */
 router.post("/public/clientes", publicCors, async (req, res) => {
   try {
@@ -120,44 +128,82 @@ router.post("/public/clientes", publicCors, async (req, res) => {
       if (suc.length) sucursalId = suc[0].id;
     }
 
+    // Insert
     const [result] = await pool.promise().query(
       `INSERT INTO clientes
-       (nombre, telefono, sucursal_id, nota, acepta, estado, added_to_group, source)
-       VALUES (?, ?, ?, ?, 1, 'nuevo', 0, ?)`,
-      [String(nombre).trim(), tel, sucursalId, toNullOrTrim(nota), source || "web"]
+       (nombre, telefono, sucursal_id, nota, acepta, estado, added_to_group, source, created_at)
+       VALUES (?, ?, ?, ?, 1, 'nuevo', 0, ?, NOW())`,
+      [
+        String(nombre).trim(),
+        tel,
+        sucursalId,
+        toNullOrTrim(nota),
+        source || "web",
+      ]
     );
 
-    res.json({ ok: true, id: result.insertId });
+    // Notificar a n8n (no romper si n8n está caído)
+    try {
+      const webhookUrl = process.env.N8N_WEBHOOK_URL_NEW_CLIENT; // ej: https://n8n.tu-dominio/webhook/new-client
+      if (webhookUrl) {
+        const fetch = (...args) =>
+          import("node-fetch").then(({ default: f }) => f(...args));
+        await fetch(webhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: result.insertId,
+            nombre: String(nombre).trim(),
+            telefono: tel, // ya normalizado
+            sucursal_id: sucursalId, // puede ser null
+            nota: toNullOrTrim(nota),
+            source: source || "web",
+          }),
+        });
+      }
+    } catch (e) {
+      console.error("Webhook n8n falló:", e.message);
+      // seguimos igual, no es crítico para responder 201
+    }
+
+    res.status(201).json({ ok: true, id: result.insertId });
   } catch (err) {
-    console.error("POST /public/clientes error:", err.sqlMessage || err.message);
+    console.error(
+      "POST /public/clientes error:",
+      err.sqlMessage || err.message
+    );
     res.status(500).json({ error: "No se pudo guardar el cliente" });
   }
 });
 
+/* =========================
+   Endpoints admin (API Key)
+========================= */
+
 /**
- * (Opcional) Middleware simple para "endpoints admin".
- * Si querés algo rápido: exigimos un API Key por header.
- * Reemplazá por tu auth real si ya tenés JWT/sesiones.
+ * Middleware simple para "endpoints admin".
+ * Exige x-api-key = process.env.ADMIN_API_KEY
+ * Reemplazar por tu auth real (JWT/sesiones) cuando quieras.
  */
 const adminGuard = (req, res, next) => {
   const key = req.header("x-api-key");
-  const expected = process.env.ADMIN_API_KEY; // definilo en tu .env del backend
+  const expected = process.env.ADMIN_API_KEY;
   if (expected && key === expected) return next();
-  // Si no configuraste clave, dejamos pasar (quitar en producción)
-  if (!expected) return next();
+  if (!expected) return next(); // si no hay clave configurada, no bloqueamos (quitar en prod)
   return res.status(401).json({ error: "No autorizado" });
 };
 
 /**
  * GET /admin/clientes
  * Filtros opcionales:
- *  - estado= nuevo|contactado|agregado|descartado
- *  - q= texto (busca en nombre, telefono, sucursal)
- *  - limit= N (default 500)
+ *  - estado = nuevo|contactado|agregado|descartado
+ *  - q      = texto (busca en nombre, telefono, sucursal)
+ *  - sucursal_id = filtra por sucursal
+ *  - limit  = N (default 500, max 2000)
  */
 router.get("/admin/clientes", adminGuard, async (req, res) => {
   try {
-    const { estado, q } = req.query;
+    const { estado, q, sucursal_id } = req.query;
     const limit = Math.min(Number(req.query.limit) || 500, 2000);
 
     const where = [];
@@ -166,6 +212,10 @@ router.get("/admin/clientes", adminGuard, async (req, res) => {
     if (estado) {
       where.push("c.estado = ?");
       args.push(estado);
+    }
+    if (sucursal_id) {
+      where.push("c.sucursal_id = ?");
+      args.push(Number(sucursal_id));
     }
     if (q) {
       where.push("(c.nombre LIKE ? OR c.telefono LIKE ? OR s.nombre LIKE ?)");
@@ -194,14 +244,14 @@ router.get("/admin/clientes", adminGuard, async (req, res) => {
 
 /**
  * PATCH /admin/clientes/:id
- * Body (cualquiera de estos): { estado, added_to_group, sucursal_id }
+ * Body (cualquiera de estos): { estado, added_to_group, sucursal_id, nota }
  */
 router.patch("/admin/clientes/:id", adminGuard, async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "ID inválido" });
 
-    const { estado, added_to_group, sucursal_id } = req.body || {};
+    const { estado, added_to_group, sucursal_id, nota } = req.body || {};
     const sets = [];
     const args = [];
 
@@ -217,6 +267,10 @@ router.patch("/admin/clientes/:id", adminGuard, async (req, res) => {
       sets.push("sucursal_id = ?");
       args.push(sucursal_id || null);
     }
+    if (typeof nota !== "undefined") {
+      sets.push("nota = ?");
+      args.push(nota || null);
+    }
 
     if (!sets.length) {
       return res.status(400).json({ error: "Nada para actualizar" });
@@ -228,7 +282,10 @@ router.patch("/admin/clientes/:id", adminGuard, async (req, res) => {
 
     res.json({ ok: true });
   } catch (err) {
-    console.error("PATCH /admin/clientes/:id error:", err.sqlMessage || err.message);
+    console.error(
+      "PATCH /admin/clientes/:id error:",
+      err.sqlMessage || err.message
+    );
     res.status(500).json({ error: "No se pudo actualizar el cliente" });
   }
 });
