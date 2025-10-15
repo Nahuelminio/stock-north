@@ -49,6 +49,189 @@ router.get("/public/sucursales", publicCors, async (_req, res) => {
 });
 
 /**
+ * POST /public/registrar-venta
+ * Registra una venta simplificada (por modelo, serie, gusto y sucursal)
+ */
+/**
+ * POST /public/registrar-venta
+ * Registra una venta (modelo/serie/gusto/sucursal, cantidad) usando ledger de stock por sucursal.
+ * Body: { modelo, serie, gusto, cantidad=1, sucursal }
+ */
+/**
+ * POST /public/registrar-venta
+ * Registra una venta usando:
+ *  A) barcode + sucursal (+ cantidad)
+ *  ó
+ *  B) modelo + serie + gusto + sucursal (+ cantidad)
+ *
+ * Body:
+ *  { barcode?, modelo?, serie?, gusto?, cantidad=1, sucursal }
+ */
+router.post("/public/registrar-venta", publicCors, async (req, res) => {
+  let conn;
+  try {
+    let { modelo, serie, gusto, barcode, cantidad = 1, sucursal } = req.body || {};
+
+    // Validaciones mínimas
+    if (!sucursal) {
+      return res.status(400).json({ ok: false, msg: "Sucursal requerida" });
+    }
+    if (!barcode && (!modelo || !serie || !gusto)) {
+      return res.status(400).json({
+        ok: false,
+        msg: "Faltan datos. Enviá 'barcode' o (modelo, serie y gusto).",
+      });
+    }
+
+    // Normalizaciones
+    sucursal = String(sucursal).toLowerCase().trim();
+    cantidad = Number(cantidad);
+    if (!Number.isInteger(cantidad) || cantidad <= 0) {
+      return res.status(400).json({ ok: false, msg: "Cantidad inválida" });
+    }
+
+    // Textos (solo si no hay barcode)
+    if (!barcode) {
+      modelo = String(modelo).toLowerCase().trim();
+      serie  = String(serie).toLowerCase().trim();
+      gusto  = String(gusto).toLowerCase().trim();
+    } else {
+      barcode = String(barcode).trim(); // conservar ceros a la izquierda
+      if (!barcode) {
+        return res.status(400).json({ ok: false, msg: "Código de barras inválido" });
+      }
+    }
+
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+
+    // 1) Sucursal (case-insensitive por nombre o apodo)
+    const [sucRows] = await conn.query(
+      `SELECT id FROM sucursales 
+       WHERE LOWER(nombre)=? OR LOWER(apodo)=?
+       LIMIT 1`,
+      [sucursal, sucursal]
+    );
+    if (sucRows.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ ok: false, msg: "Sucursal no encontrada" });
+    }
+    const sucursal_id = sucRows[0].id;
+
+    // 2) Resolver producto y gusto
+    let producto_id, gusto_id;
+
+    if (barcode) {
+      // 2A) Por código de barras (se espera único por gusto)
+      const [gbRows] = await conn.query(
+        `SELECT g.id AS gusto_id, g.producto_id
+           FROM gustos g
+          WHERE g.barcode = ?
+          LIMIT 1`,
+        [barcode]
+      );
+      if (gbRows.length === 0) {
+        await conn.rollback();
+        return res.status(404).json({ ok: false, msg: "Gusto no encontrado para ese código de barras" });
+      }
+      gusto_id = gbRows[0].gusto_id;
+      producto_id = gbRows[0].producto_id;
+
+    } else {
+      // 2B) Por modelo + serie + gusto (tolerante)
+      const likeModelo = `%${modelo}%`;
+      const likeSerie  = `%${serie}%`;
+
+      const [prodRows] = await conn.query(
+        `SELECT id
+           FROM productos
+          WHERE LOWER(CONCAT_WS(' ', COALESCE(modelo,''), COALESCE(serie,''), COALESCE(nombre,''))) LIKE ?
+            AND LOWER(CONCAT_WS(' ', COALESCE(modelo,''), COALESCE(serie,''), COALESCE(nombre,''))) LIKE ?
+          LIMIT 1`,
+        [likeModelo, likeSerie]
+      );
+      if (prodRows.length === 0) {
+        await conn.rollback();
+        return res.status(404).json({ ok: false, msg: "Producto no encontrado (modelo/serie)" });
+      }
+      producto_id = prodRows[0].id;
+
+      const [gustoRows] = await conn.query(
+        `SELECT id
+           FROM gustos
+          WHERE producto_id = ?
+            AND LOWER(nombre) LIKE ?
+          LIMIT 1`,
+        [producto_id, `%${gusto}%`]
+      );
+      if (gustoRows.length === 0) {
+        await conn.rollback();
+        return res.status(404).json({ ok: false, msg: "Gusto no encontrado para ese producto" });
+      }
+      gusto_id = gustoRows[0].id;
+    }
+
+    // 3) Bloqueo + chequeo de stock por sucursal
+    await conn.query(
+      `SELECT id FROM stock WHERE sucursal_id=? AND gusto_id=? FOR UPDATE`,
+      [sucursal_id, gusto_id]
+    );
+    const [[saldo]] = await conn.query(
+      `SELECT COALESCE(SUM(cantidad),0) AS stock_disponible
+         FROM stock
+        WHERE sucursal_id=? AND gusto_id=?`,
+      [sucursal_id, gusto_id]
+    );
+    const stockDisponible = Number(saldo.stock_disponible) || 0;
+    if (stockDisponible < cantidad) {
+      await conn.rollback();
+      return res.status(400).json({
+        ok: false,
+        msg: `Stock insuficiente en la sucursal. Disponible: ${stockDisponible}`,
+      });
+    }
+
+    // 4) Insertar venta (sin precio aquí; snapshot opcional se puede agregar luego)
+    const [ventaRes] = await conn.query(
+      `INSERT INTO ventas (producto_id, gusto_id, sucursal_id, cantidad, fecha, canal)
+       VALUES (?, ?, ?, ?, NOW(), 'bot')`,
+      [producto_id, gusto_id, sucursal_id, cantidad]
+    );
+
+    // 5) Movimiento de stock (negativo, precio NULL para no alterar catálogo)
+    await conn.query(
+      `INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio, motivo, referencia_id, created_at)
+       VALUES (?, ?, ?, NULL, 'venta', ?, NOW())`,
+      [gusto_id, sucursal_id, -cantidad, ventaRes.insertId]
+    );
+
+    await conn.commit();
+
+    return res.json({
+      ok: true,
+      msg: "Venta registrada correctamente",
+      data: {
+        venta_id: ventaRes.insertId,
+        producto_id,
+        gusto_id,
+        sucursal_id,
+        cantidad,
+        metodo: barcode ? "barcode" : "texto",
+        stock_restante: stockDisponible - cantidad
+      },
+    });
+
+  } catch (err) {
+    if (conn) try { await conn.rollback(); } catch {}
+    console.error("POST /public/registrar-venta error:", err);
+    return res.status(500).json({ ok: false, msg: "Error interno del servidor" });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+
+/**
  * GET /public/productos
  * Catálogo público por gusto. Parámetros opcionales:
  *   - sucursal_id: filtra stock/precio por esa sucursal
