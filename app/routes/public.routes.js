@@ -50,15 +50,6 @@ router.get("/public/sucursales", publicCors, async (_req, res) => {
 
 /**
  * POST /public/registrar-venta
- * Registra una venta simplificada (por modelo, serie, gusto y sucursal)
- */
-/**
- * POST /public/registrar-venta
- * Registra una venta (modelo/serie/gusto/sucursal, cantidad) usando ledger de stock por sucursal.
- * Body: { modelo, serie, gusto, cantidad=1, sucursal }
- */
-/**
- * POST /public/registrar-venta
  * Registra una venta usando:
  *  A) barcode + sucursal (+ cantidad)
  *  ó
@@ -102,10 +93,11 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       }
     }
 
-    conn = await pool.getConnection();
+    // ✅ CAMBIO CLAVE: usar pool.promisificado
+    conn = await pool.promise().getConnection();  
     await conn.beginTransaction();
 
-    // 1) Sucursal (case-insensitive por nombre o apodo)
+    // 1) Buscar sucursal
     const [sucRows] = await conn.query(
       `SELECT id FROM sucursales 
        WHERE LOWER(nombre)=? OR LOWER(apodo)=?
@@ -122,7 +114,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     let producto_id, gusto_id;
 
     if (barcode) {
-      // 2A) Por código de barras (se espera único por gusto)
+      // A) Por código de barras
       const [gbRows] = await conn.query(
         `SELECT g.id AS gusto_id, g.producto_id
            FROM gustos g
@@ -138,7 +130,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       producto_id = gbRows[0].producto_id;
 
     } else {
-      // 2B) Por modelo + serie + gusto (tolerante)
+      // B) Por modelo + serie + gusto
       const likeModelo = `%${modelo}%`;
       const likeSerie  = `%${serie}%`;
 
@@ -171,7 +163,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       gusto_id = gustoRows[0].id;
     }
 
-    // 3) Bloqueo + chequeo de stock por sucursal
+    // 3) Verificar stock por sucursal
     await conn.query(
       `SELECT id FROM stock WHERE sucursal_id=? AND gusto_id=? FOR UPDATE`,
       [sucursal_id, gusto_id]
@@ -191,14 +183,14 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       });
     }
 
-    // 4) Insertar venta (sin precio aquí; snapshot opcional se puede agregar luego)
+    // 4) Insertar venta
     const [ventaRes] = await conn.query(
       `INSERT INTO ventas (producto_id, gusto_id, sucursal_id, cantidad, fecha, canal)
        VALUES (?, ?, ?, ?, NOW(), 'bot')`,
       [producto_id, gusto_id, sucursal_id, cantidad]
     );
 
-    // 5) Movimiento de stock (negativo, precio NULL para no alterar catálogo)
+    // 5) Movimiento de stock negativo
     await conn.query(
       `INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio, motivo, referencia_id, created_at)
        VALUES (?, ?, ?, NULL, 'venta', ?, NOW())`,
@@ -229,7 +221,6 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     if (conn) conn.release();
   }
 });
-
 
 /**
  * GET /public/productos
