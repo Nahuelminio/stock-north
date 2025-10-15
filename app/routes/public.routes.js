@@ -48,20 +48,17 @@ router.get("/public/sucursales", publicCors, async (_req, res) => {
   }
 });
 
-/**
- * POST /public/registrar-venta
- * Registra una venta usando:
- *  A) barcode + sucursal (+ cantidad)
- *  ó
- *  B) modelo + serie + gusto + sucursal (+ cantidad)
- *
- * Body:
- *  { barcode?, modelo?, serie?, gusto?, cantidad=1, sucursal }
- */
 router.post("/public/registrar-venta", publicCors, async (req, res) => {
   let conn;
   try {
-    let { modelo, serie, gusto, barcode, cantidad = 1, sucursal } = req.body || {};
+    let {
+      modelo,
+      serie,
+      gusto,
+      barcode,
+      cantidad = 1,
+      sucursal,
+    } = req.body || {};
 
     // Validaciones mínimas
     if (!sucursal) {
@@ -84,20 +81,22 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     // Textos (solo si no hay barcode)
     if (!barcode) {
       modelo = String(modelo).toLowerCase().trim();
-      serie  = String(serie).toLowerCase().trim();
-      gusto  = String(gusto).toLowerCase().trim();
+      serie = String(serie).toLowerCase().trim();
+      gusto = String(gusto).toLowerCase().trim();
     } else {
-      barcode = String(barcode).trim(); // conservar ceros a la izquierda
+      barcode = String(barcode).trim();
       if (!barcode) {
-        return res.status(400).json({ ok: false, msg: "Código de barras inválido" });
+        return res
+          .status(400)
+          .json({ ok: false, msg: "Código de barras inválido" });
       }
     }
 
-    // ✅ CAMBIO CLAVE: usar pool.promisificado
-    conn = await pool.promise().getConnection();  
+    // ✅ usar el pool promisificado al pedir conexión
+    conn = await pool.promise().getConnection();
     await conn.beginTransaction();
 
-    // 1) Buscar sucursal
+    // 1️⃣ Buscar sucursal
     const [sucRows] = await conn.query(
       `SELECT id FROM sucursales 
        WHERE LOWER(nombre)=? OR LOWER(apodo)=?
@@ -110,7 +109,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     }
     const sucursal_id = sucRows[0].id;
 
-    // 2) Resolver producto y gusto
+    // 2️⃣ Resolver producto y gusto
     let producto_id, gusto_id;
 
     if (barcode) {
@@ -124,15 +123,19 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       );
       if (gbRows.length === 0) {
         await conn.rollback();
-        return res.status(404).json({ ok: false, msg: "Gusto no encontrado para ese código de barras" });
+        return res
+          .status(404)
+          .json({
+            ok: false,
+            msg: "Gusto no encontrado para ese código de barras",
+          });
       }
       gusto_id = gbRows[0].gusto_id;
       producto_id = gbRows[0].producto_id;
-
     } else {
       // B) Por modelo + serie + gusto
       const likeModelo = `%${modelo}%`;
-      const likeSerie  = `%${serie}%`;
+      const likeSerie = `%${serie}%`;
 
       const [prodRows] = await conn.query(
         `SELECT id
@@ -144,7 +147,9 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       );
       if (prodRows.length === 0) {
         await conn.rollback();
-        return res.status(404).json({ ok: false, msg: "Producto no encontrado (modelo/serie)" });
+        return res
+          .status(404)
+          .json({ ok: false, msg: "Producto no encontrado (modelo/serie)" });
       }
       producto_id = prodRows[0].id;
 
@@ -158,12 +163,14 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       );
       if (gustoRows.length === 0) {
         await conn.rollback();
-        return res.status(404).json({ ok: false, msg: "Gusto no encontrado para ese producto" });
+        return res
+          .status(404)
+          .json({ ok: false, msg: "Gusto no encontrado para ese producto" });
       }
       gusto_id = gustoRows[0].id;
     }
 
-    // 3) Verificar stock por sucursal
+    // 3️⃣ Verificar stock por sucursal
     await conn.query(
       `SELECT id FROM stock WHERE sucursal_id=? AND gusto_id=? FOR UPDATE`,
       [sucursal_id, gusto_id]
@@ -183,14 +190,14 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       });
     }
 
-    // 4) Insertar venta
+    // 4️⃣ Insertar venta
     const [ventaRes] = await conn.query(
       `INSERT INTO ventas (producto_id, gusto_id, sucursal_id, cantidad, fecha, canal)
        VALUES (?, ?, ?, ?, NOW(), 'bot')`,
       [producto_id, gusto_id, sucursal_id, cantidad]
     );
 
-    // 5) Movimiento de stock negativo
+    // 5️⃣ Movimiento de stock negativo
     await conn.query(
       `INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio, motivo, referencia_id, created_at)
        VALUES (?, ?, ?, NULL, 'venta', ?, NOW())`,
@@ -209,14 +216,18 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
         sucursal_id,
         cantidad,
         metodo: barcode ? "barcode" : "texto",
-        stock_restante: stockDisponible - cantidad
+        stock_restante: stockDisponible - cantidad,
       },
     });
-
   } catch (err) {
-    if (conn) try { await conn.rollback(); } catch {}
+    if (conn)
+      try {
+        await conn.rollback();
+      } catch {}
     console.error("POST /public/registrar-venta error:", err);
-    return res.status(500).json({ ok: false, msg: "Error interno del servidor" });
+    return res
+      .status(500)
+      .json({ ok: false, msg: "Error interno del servidor" });
   } finally {
     if (conn) conn.release();
   }
