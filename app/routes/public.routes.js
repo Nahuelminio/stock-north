@@ -607,26 +607,25 @@ router.patch("/admin/sucursales/:id", adminGuard, async (req, res) => {
   }
 });
 
-// routes/public.routes.js
-router.get(
-  "/public/todos-en-stock-por-sucursal",
-  publicCors,
-  async (req, res) => {
-    let conn;
-    try {
-      conn = await pool.getConnection();
+router.get("/public/productosSucursal", publicCors, async (req, res) => {
+  try {
+    const sucursalId = req.query.sucursal_id
+      ? Number(req.query.sucursal_id)
+      : null;
+    const onlyInStock = req.query.inStock === "1";
 
-      const pageSize = Math.min(
-        Math.max(parseInt(req.query.pageSize) || 1000, 1),
-        5000
-      );
-      const page = Math.max(parseInt(req.query.page) || 1, 1);
-      const offset = (page - 1) * pageSize;
+    // Si viene sucursal_id, filtramos en el CTE; si no, traemos todas las sucursales
+    const whereSucursal = sucursalId ? "WHERE st.sucursal_id = ?" : "";
 
-      const sql = `
+    const sql = `
       WITH agg AS (
-        SELECT st.gusto_id, st.sucursal_id, SUM(st.cantidad) AS stock_raw
+        SELECT
+          st.gusto_id,
+          st.sucursal_id,
+          SUM(st.cantidad) AS stock_raw,
+          MAX(st.precio)   AS precio_raw
         FROM stock st
+        ${whereSucursal}
         GROUP BY st.gusto_id, st.sucursal_id
       )
       SELECT
@@ -636,38 +635,36 @@ router.get(
           ' - ',
           TRIM(REPLACE(REPLACE(g.nombre, CHAR(9), ' '), '  ', ' '))
         ) AS nombre,
-        CAST(agg.stock_raw AS UNSIGNED) AS stock,
-        LOWER(s.nombre) AS sucursal
+        CAST(agg.stock_raw  AS UNSIGNED)        AS stock,
+        CAST(agg.precio_raw AS DECIMAL(10,2))   AS precio,
+        s.id                                      AS sucursal_id,
+        LOWER(s.nombre)                           AS sucursal
       FROM agg
-      JOIN gustos g     ON g.id = agg.gusto_id
-      JOIN productos p  ON p.id = g.producto_id
-      JOIN sucursales s ON s.id = agg.sucursal_id
-      HAVING stock > 0
+      JOIN gustos g      ON g.id = agg.gusto_id
+      JOIN productos p   ON p.id = g.producto_id
+      JOIN sucursales s  ON s.id = agg.sucursal_id
+      ${onlyInStock ? "WHERE agg.stock_raw > 0" : ""}
       ORDER BY p.nombre ASC, g.nombre ASC, s.nombre ASC
-      LIMIT ? OFFSET ?;
+      LIMIT 500;
     `;
 
-      const [rows] = await conn.query(sql, [pageSize, offset]);
+    const params = sucursalId ? [sucursalId] : [];
+    const [rows] = await pool.promise().query(sql, params);
 
-      res.json({
-        ok: true,
-        page,
-        pageSize,
-        count: rows.length,
-        items: rows, // [{ id, nombre, stock, sucursal }]
-      });
-    } catch (err) {
-      console.error(
-        "GET /public/todos-en-stock-por-sucursal error:",
-        err.sqlMessage || err.message
-      );
-      res
-        .status(500)
-        .json({ ok: false, msg: "No se pudo consultar el stock por sucursal" });
-    } finally {
-      if (conn) conn.release();
-    }
+    // ⚠️ Si querés exactamente { id, nombre, stock, sucursal } podés mapear acá:
+    // const data = rows.map(r => ({ id: r.id, nombre: r.nombre, stock: r.stock, sucursal: r.sucursal }));
+    // return res.json(data);
+
+    res.json(rows);
+  } catch (err) {
+    console.error(
+      "GET /public/productosSucursal error:",
+      err.sqlMessage || err.message
+    );
+    res
+      .status(500)
+      .json({ error: "No se pudieron traer los productos por sucursal" });
   }
-);
+});
 
 module.exports = router;
