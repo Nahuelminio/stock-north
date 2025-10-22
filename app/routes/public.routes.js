@@ -48,6 +48,9 @@ router.get("/public/sucursales", publicCors, async (_req, res) => {
   }
 });
 
+// =========================
+// 📦 Registrar venta pública
+// =========================
 router.post("/public/registrar-venta", publicCors, async (req, res) => {
   let conn;
   try {
@@ -60,68 +63,61 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       sucursal,
     } = req.body || {};
 
-    // Validaciones mínimas
-    if (!sucursal) {
+    // 1️⃣ Validaciones mínimas
+    if (!sucursal)
       return res.status(400).json({ ok: false, msg: "Sucursal requerida" });
-    }
-    if (!barcode && (!modelo || !serie || !gusto)) {
+    if (!barcode && (!modelo || !serie || !gusto))
       return res.status(400).json({
         ok: false,
         msg: "Faltan datos. Enviá 'barcode' o (modelo, serie y gusto).",
       });
-    }
 
-    // Normalizaciones
+    // 2️⃣ Normalizaciones
     sucursal = String(sucursal).toLowerCase().trim();
     cantidad = Number(cantidad);
-    if (!Number.isInteger(cantidad) || cantidad <= 0) {
+    if (!Number.isInteger(cantidad) || cantidad <= 0)
       return res.status(400).json({ ok: false, msg: "Cantidad inválida" });
-    }
 
-    // Textos (solo si no hay barcode)
     if (!barcode) {
       modelo = String(modelo).toLowerCase().trim();
       serie = String(serie).toLowerCase().trim();
       gusto = String(gusto).toLowerCase().trim();
     } else {
       barcode = String(barcode).trim();
-      if (!barcode) {
+      if (!barcode)
         return res
           .status(400)
           .json({ ok: false, msg: "Código de barras inválido" });
-      }
     }
 
-    // ✅ usar el pool promisificado al pedir conexión
+    // 3️⃣ Conexión + Transacción
     conn = await pool.promise().getConnection();
     await conn.beginTransaction();
 
-    // 1️⃣ Buscar sucursal
+    // 🔹 Buscar sucursal
     const [sucRows] = await conn.query(
-      `SELECT id FROM sucursales 
-       WHERE LOWER(nombre)=? OR LOWER(apodo)=?
-       LIMIT 1`,
+      `SELECT id FROM sucursales WHERE LOWER(nombre)=? OR LOWER(apodo)=? LIMIT 1`,
       [sucursal, sucursal]
     );
-    if (sucRows.length === 0) {
+    if (!sucRows.length) {
       await conn.rollback();
       return res.status(404).json({ ok: false, msg: "Sucursal no encontrada" });
     }
     const sucursal_id = sucRows[0].id;
 
-    // 2️⃣ Resolver producto y gusto
+    // 🔹 Resolver producto/gusto
     let producto_id, gusto_id;
 
     if (barcode) {
-      // A) Por código de barras
-      const [gbRows] = await conn.query(
+      // A) Buscar por código de barras
+      const [rows] = await conn.query(
         `SELECT g.id AS gusto_id, g.producto_id
-           FROM gustos g
-          WHERE g.barcode = ?
-          LIMIT 1`,
+         FROM gustos g
+         WHERE g.codigo_barra = ?
+         LIMIT 1`,
         [barcode]
       );
-      if (gbRows.length === 0) {
+      if (!rows.length) {
         await conn.rollback();
         return res
           .status(404)
@@ -130,57 +126,78 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
             msg: "Gusto no encontrado para ese código de barras",
           });
       }
-      gusto_id = gbRows[0].gusto_id;
-      producto_id = gbRows[0].producto_id;
+      gusto_id = rows[0].gusto_id;
+      producto_id = rows[0].producto_id;
     } else {
-      // B) Por modelo + serie + gusto
-      const likeModelo = `%${modelo}%`;
-      const likeSerie = `%${serie}%`;
+      // B) Buscar por texto laxo (sin espacios ni guiones)
+      const modeloNS = modelo.replace(/[\s-]+/g, "");
+      const serieNS = serie.replace(/[\s-]+/g, "");
+      const gustoTxt = gusto;
 
-      const [prodRows] = await conn.query(
-        `SELECT id
-           FROM productos
-          WHERE LOWER(CONCAT_WS(' ', COALESCE(modelo,''), COALESCE(serie,''), COALESCE(nombre,''))) LIKE ?
-            AND LOWER(CONCAT_WS(' ', COALESCE(modelo,''), COALESCE(serie,''), COALESCE(nombre,''))) LIKE ?
-          LIMIT 1`,
-        [likeModelo, likeSerie]
+      const normSql = `
+        REPLACE(REPLACE(REPLACE(LOWER(CONCAT(p.nombre,' ',g.nombre)), ' ', ''), '-', ''), 'puffs', '')
+      `;
+
+      let found = null;
+
+      const [t1] = await conn.query(
+        `SELECT g.id AS gusto_id, g.producto_id
+         FROM gustos g
+         JOIN productos p ON p.id = g.producto_id
+         WHERE ${normSql} LIKE ? AND ${normSql} LIKE ? AND LOWER(g.nombre) LIKE ?
+         LIMIT 1`,
+        [`%${modeloNS}%`, `%${serieNS}%`, `%${gustoTxt}%`]
       );
-      if (prodRows.length === 0) {
+      if (t1.length) found = t1[0];
+
+      if (!found) {
+        const [t2] = await conn.query(
+          `SELECT g.id AS gusto_id, g.producto_id
+           FROM gustos g
+           JOIN productos p ON p.id = g.producto_id
+           WHERE ${normSql} LIKE ? AND LOWER(g.nombre) LIKE ?
+           LIMIT 1`,
+          [`%${serieNS}%`, `%${gustoTxt}%`]
+        );
+        if (t2.length) found = t2[0];
+      }
+
+      if (!found) {
+        const [t3] = await conn.query(
+          `SELECT g.id AS gusto_id, g.producto_id
+           FROM gustos g
+           JOIN productos p ON p.id = g.producto_id
+           WHERE ${normSql} LIKE ? AND LOWER(g.nombre) LIKE ?
+           LIMIT 1`,
+          [`%${modeloNS}%`, `%${gustoTxt}%`]
+        );
+        if (t3.length) found = t3[0];
+      }
+
+      if (!found) {
         await conn.rollback();
         return res
           .status(404)
           .json({ ok: false, msg: "Producto no encontrado (modelo/serie)" });
       }
-      producto_id = prodRows[0].id;
 
-      const [gustoRows] = await conn.query(
-        `SELECT id
-           FROM gustos
-          WHERE producto_id = ?
-            AND LOWER(nombre) LIKE ?
-          LIMIT 1`,
-        [producto_id, `%${gusto}%`]
-      );
-      if (gustoRows.length === 0) {
-        await conn.rollback();
-        return res
-          .status(404)
-          .json({ ok: false, msg: "Gusto no encontrado para ese producto" });
-      }
-      gusto_id = gustoRows[0].id;
+      gusto_id = found.gusto_id;
+      producto_id = found.producto_id;
     }
 
-    // 3️⃣ Verificar stock por sucursal
+    // 🔹 Verificar stock (modelo de movimientos)
     await conn.query(
       `SELECT id FROM stock WHERE sucursal_id=? AND gusto_id=? FOR UPDATE`,
       [sucursal_id, gusto_id]
     );
+
     const [[saldo]] = await conn.query(
       `SELECT COALESCE(SUM(cantidad),0) AS stock_disponible
-         FROM stock
-        WHERE sucursal_id=? AND gusto_id=?`,
+       FROM stock
+       WHERE sucursal_id=? AND gusto_id=?`,
       [sucursal_id, gusto_id]
     );
+
     const stockDisponible = Number(saldo.stock_disponible) || 0;
     if (stockDisponible < cantidad) {
       await conn.rollback();
@@ -190,25 +207,34 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       });
     }
 
-    // 4️⃣ Insertar venta
+    // 🔹 Registrar venta (usa precio actual del último movimiento)
+    const [[precioRow]] = await conn.query(
+      `SELECT precio FROM stock 
+       WHERE gusto_id = ? AND sucursal_id = ? 
+       ORDER BY id DESC LIMIT 1`,
+      [gusto_id, sucursal_id]
+    );
+    const precioUnit = precioRow?.precio || 0;
+
     const [ventaRes] = await conn.query(
-      `INSERT INTO ventas (producto_id, gusto_id, sucursal_id, cantidad, fecha, canal)
-       VALUES (?, ?, ?, ?, NOW(), 'bot')`,
-      [producto_id, gusto_id, sucursal_id, cantidad]
+      `INSERT INTO ventas (gusto_id, sucursal_id, cantidad, precio_unitario, fecha)
+       VALUES (?, ?, ?, ?, NOW())`,
+      [gusto_id, sucursal_id, cantidad, precioUnit]
     );
 
-    // 5️⃣ Movimiento de stock negativo
+    // 🔹 Registrar movimiento de stock negativo
     await conn.query(
-      `INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio, motivo, referencia_id, created_at)
-       VALUES (?, ?, ?, NULL, 'venta', ?, NOW())`,
-      [gusto_id, sucursal_id, -cantidad, ventaRes.insertId]
+      `INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio)
+       VALUES (?, ?, ?, NULL)`,
+      [gusto_id, sucursal_id, -cantidad]
     );
 
     await conn.commit();
 
+    // ✅ Éxito
     return res.json({
       ok: true,
-      msg: "Venta registrada correctamente",
+      msg: "Venta registrada correctamente ✅",
       data: {
         venta_id: ventaRes.insertId,
         producto_id,
@@ -224,7 +250,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       try {
         await conn.rollback();
       } catch {}
-    console.error("POST /public/registrar-venta error:", err);
+    console.error("❌ POST /public/registrar-venta error:", err.message);
     return res
       .status(500)
       .json({ ok: false, msg: "Error interno del servidor" });
@@ -232,6 +258,8 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     if (conn) conn.release();
   }
 });
+
+
 
 /**
  * GET /public/productos
@@ -279,6 +307,94 @@ router.get("/public/productos", publicCors, async (req, res) => {
     res.status(500).json({ error: "No se pudieron traer los productos" });
   }
 });
+
+// routes/public.routes.js (o donde corresponda)
+router.get("/public/stock-por-sucursal", publicCors, async (req, res) => {
+  let conn;
+  try {
+    conn = await pool.getConnection();
+
+    // Filtros
+    const {
+      modelo = "",
+      gusto = "",
+      sucursal = "",
+      sucursal_id = "",
+      barcode = "",
+      gusto_id = "",
+      producto_id = "",
+      inStock = "0",
+      limit = "200",
+    } = req.query || {};
+
+    // Sanitización básica
+    const LIM = Math.min(Math.max(parseInt(limit) || 200, 1), 500);
+    const where = [];
+    const params = [];
+
+    // Filtros opcionales
+    if (producto_id) { where.push("p.id = ?"); params.push(Number(producto_id)); }
+    if (gusto_id)    { where.push("g.id = ?"); params.push(Number(gusto_id)); }
+    if (barcode)     { where.push("g.barcode = ?"); params.push(String(barcode).trim()); }
+    if (modelo)      { where.push("LOWER(p.nombre) LIKE ?"); params.push(`%${String(modelo).toLowerCase().trim()}%`); }
+    if (gusto)       { where.push("LOWER(g.nombre) LIKE ?"); params.push(`%${String(gusto).toLowerCase().trim()}%`); }
+    if (sucursal_id) { where.push("s.id = ?"); params.push(Number(sucursal_id)); }
+    if (sucursal)    { where.push("LOWER(s.nombre) LIKE ?"); params.push(`%${String(sucursal).toLowerCase().trim()}%`); }
+
+    // SQL: agrupado por sucursal
+    const sql = `
+      WITH agg AS (
+        SELECT
+          st.gusto_id,
+          st.sucursal_id,
+          SUM(st.cantidad) AS stock_raw,
+          MAX(st.precio)   AS precio_raw
+        FROM stock st
+        GROUP BY st.gusto_id, st.sucursal_id
+      )
+      SELECT
+        p.id                           AS producto_id,
+        TRIM(REPLACE(REPLACE(p.nombre, CHAR(9), ' '), '  ', ' ')) AS producto_nombre,
+        g.id                           AS gusto_id,
+        TRIM(REPLACE(REPLACE(g.nombre, CHAR(9), ' '), '  ', ' ')) AS gusto_nombre,
+        s.id                           AS sucursal_id,
+        s.nombre                       AS sucursal_nombre,
+        CAST(agg.stock_raw  AS UNSIGNED)      AS stock,
+        CAST(agg.precio_raw AS DECIMAL(10,2)) AS precio
+      FROM agg
+      JOIN gustos g      ON g.id = agg.gusto_id
+      JOIN productos p   ON p.id = g.producto_id
+      JOIN sucursales s  ON s.id = agg.sucursal_id
+      ${where.length ? "WHERE " + where.join(" AND ") : ""}
+      ${inStock === "1" ? "HAVING stock > 0" : ""}
+      ORDER BY p.nombre ASC, g.nombre ASC, s.nombre ASC
+      LIMIT ${LIM};
+    `;
+
+    const [rows] = await conn.query(sql, params);
+
+    return res.json({
+      ok: true,
+      count: rows.length,
+      items: rows.map(r => ({
+        producto_id: r.producto_id,
+        modelo: r.producto_nombre,
+        gusto_id: r.gusto_id,
+        gusto: r.gusto_nombre,
+        sucursal_id: r.sucursal_id,
+        sucursal: r.sucursal_nombre,
+        stock: r.stock,
+        precio: r.precio
+      }))
+    });
+  } catch (err) {
+    console.error("GET /public/stock-por-sucursal error:", err.sqlMessage || err.message);
+    res.status(500).json({ ok: false, msg: "Error consultando stock por sucursal" });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
 
 /**
  * POST /public/clientes
