@@ -616,7 +616,6 @@ router.get(
     try {
       conn = await pool.getConnection();
 
-      // Paginación opcional (por si tu dataset es grande)
       const pageSize = Math.min(
         Math.max(parseInt(req.query.pageSize) || 1000, 1),
         5000
@@ -626,10 +625,7 @@ router.get(
 
       const sql = `
       WITH agg AS (
-        SELECT
-          st.gusto_id,
-          st.sucursal_id,
-          SUM(st.cantidad) AS stock_raw
+        SELECT st.gusto_id, st.sucursal_id, SUM(st.cantidad) AS stock_raw
         FROM stock st
         GROUP BY st.gusto_id, st.sucursal_id
       )
@@ -643,9 +639,9 @@ router.get(
         CAST(agg.stock_raw AS UNSIGNED) AS stock,
         LOWER(s.nombre) AS sucursal
       FROM agg
-      JOIN gustos g      ON g.id = agg.gusto_id
-      JOIN productos p   ON p.id = g.producto_id
-      JOIN sucursales s  ON s.id = agg.sucursal_id
+      JOIN gustos g     ON g.id = agg.gusto_id
+      JOIN productos p  ON p.id = g.producto_id
+      JOIN sucursales s ON s.id = agg.sucursal_id
       HAVING stock > 0
       ORDER BY p.nombre ASC, g.nombre ASC, s.nombre ASC
       LIMIT ? OFFSET ?;
