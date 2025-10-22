@@ -308,88 +308,56 @@ router.get("/public/productos", publicCors, async (req, res) => {
   }
 });
 
-// routes/public.routes.js (o donde corresponda)
-router.get("/public/stock-por-sucursal", publicCors, async (req, res) => {
+// routes/public.routes.js
+router.get("/public/todos-en-stock-por-sucursal", publicCors, async (req, res) => {
   let conn;
   try {
     conn = await pool.getConnection();
 
-    // Filtros
-    const {
-      modelo = "",
-      gusto = "",
-      sucursal = "",
-      sucursal_id = "",
-      barcode = "",
-      gusto_id = "",
-      producto_id = "",
-      inStock = "0",
-      limit = "200",
-    } = req.query || {};
+    // Paginación opcional (por si tu dataset es grande)
+    const pageSize = Math.min(Math.max(parseInt(req.query.pageSize) || 1000, 1), 5000);
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const offset = (page - 1) * pageSize;
 
-    // Sanitización básica
-    const LIM = Math.min(Math.max(parseInt(limit) || 200, 1), 500);
-    const where = [];
-    const params = [];
-
-    // Filtros opcionales
-    if (producto_id) { where.push("p.id = ?"); params.push(Number(producto_id)); }
-    if (gusto_id)    { where.push("g.id = ?"); params.push(Number(gusto_id)); }
-    if (barcode)     { where.push("g.barcode = ?"); params.push(String(barcode).trim()); }
-    if (modelo)      { where.push("LOWER(p.nombre) LIKE ?"); params.push(`%${String(modelo).toLowerCase().trim()}%`); }
-    if (gusto)       { where.push("LOWER(g.nombre) LIKE ?"); params.push(`%${String(gusto).toLowerCase().trim()}%`); }
-    if (sucursal_id) { where.push("s.id = ?"); params.push(Number(sucursal_id)); }
-    if (sucursal)    { where.push("LOWER(s.nombre) LIKE ?"); params.push(`%${String(sucursal).toLowerCase().trim()}%`); }
-
-    // SQL: agrupado por sucursal
     const sql = `
       WITH agg AS (
         SELECT
           st.gusto_id,
           st.sucursal_id,
-          SUM(st.cantidad) AS stock_raw,
-          MAX(st.precio)   AS precio_raw
+          SUM(st.cantidad) AS stock_raw
         FROM stock st
         GROUP BY st.gusto_id, st.sucursal_id
       )
       SELECT
-        p.id                           AS producto_id,
-        TRIM(REPLACE(REPLACE(p.nombre, CHAR(9), ' '), '  ', ' ')) AS producto_nombre,
-        g.id                           AS gusto_id,
-        TRIM(REPLACE(REPLACE(g.nombre, CHAR(9), ' '), '  ', ' ')) AS gusto_nombre,
-        s.id                           AS sucursal_id,
-        s.nombre                       AS sucursal_nombre,
-        CAST(agg.stock_raw  AS UNSIGNED)      AS stock,
-        CAST(agg.precio_raw AS DECIMAL(10,2)) AS precio
+        g.id AS id,
+        CONCAT(
+          TRIM(REPLACE(REPLACE(p.nombre, CHAR(9), ' '), '  ', ' ')),
+          ' - ',
+          TRIM(REPLACE(REPLACE(g.nombre, CHAR(9), ' '), '  ', ' '))
+        ) AS nombre,
+        CAST(agg.stock_raw AS UNSIGNED) AS stock,
+        LOWER(s.nombre) AS sucursal
       FROM agg
       JOIN gustos g      ON g.id = agg.gusto_id
       JOIN productos p   ON p.id = g.producto_id
       JOIN sucursales s  ON s.id = agg.sucursal_id
-      ${where.length ? "WHERE " + where.join(" AND ") : ""}
-      ${inStock === "1" ? "HAVING stock > 0" : ""}
+      HAVING stock > 0
       ORDER BY p.nombre ASC, g.nombre ASC, s.nombre ASC
-      LIMIT ${LIM};
+      LIMIT ? OFFSET ?;
     `;
 
-    const [rows] = await conn.query(sql, params);
+    const [rows] = await conn.query(sql, [pageSize, offset]);
 
-    return res.json({
+    res.json({
       ok: true,
+      page,
+      pageSize,
       count: rows.length,
-      items: rows.map(r => ({
-        producto_id: r.producto_id,
-        modelo: r.producto_nombre,
-        gusto_id: r.gusto_id,
-        gusto: r.gusto_nombre,
-        sucursal_id: r.sucursal_id,
-        sucursal: r.sucursal_nombre,
-        stock: r.stock,
-        precio: r.precio
-      }))
+      items: rows, // [{ id, nombre, stock, sucursal }]
     });
   } catch (err) {
-    console.error("GET /public/stock-por-sucursal error:", err.sqlMessage || err.message);
-    res.status(500).json({ ok: false, msg: "Error consultando stock por sucursal" });
+    console.error("GET /public/todos-en-stock-por-sucursal error:", err.sqlMessage || err.message);
+    res.status(500).json({ ok: false, msg: "No se pudo consultar el stock por sucursal" });
   } finally {
     if (conn) conn.release();
   }
