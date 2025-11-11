@@ -15,6 +15,7 @@ router.get("/", authenticate, async (req, res) => {
         p.nombre AS producto_nombre,
         g.id AS gusto_id,
         g.nombre AS gusto,
+        s.apodo AS apodo,
         g.codigo_barra,
         s.id AS sucursal_id,
         s.nombre AS sucursal,
