@@ -19,7 +19,8 @@ router.get("/", authenticate, async (req, res) => {
         s.id AS sucursal_id,
         s.nombre AS sucursal,
         st.cantidad AS stock,
-        st.precio AS precio
+        st.precio AS precio,
+        st.barra                      -- 🆕 agregado
       FROM productos p
       JOIN gustos g ON g.producto_id = p.id
       JOIN stock st ON st.gusto_id = g.id
@@ -40,9 +41,11 @@ router.get("/", authenticate, async (req, res) => {
   }
 });
 
+
 // 🔵 Agregar producto (solo admin)
 router.post("/agregar", authenticate, authorizeAdmin, async (req, res) => {
-  const { nombre, gusto, sucursal_id, stock, precio, codigo_barra } = req.body;
+  const { nombre, gusto, sucursal_id, stock, precio, codigo_barra, barra } = req.body;
+
   if (
     !nombre ||
     !gusto ||
@@ -90,14 +93,15 @@ router.post("/agregar", authenticate, authorizeAdmin, async (req, res) => {
         [producto_id, gusto, codigo_barra || null]
       );
 
+    // ✅ Insert stock con barra opcional
     await pool
       .promise()
       .query(
-        "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
-        [gustoInsert.insertId, sucursal_id, stock, precio]
+        "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio, barra) VALUES (?, ?, ?, ?, ?)",
+        [gustoInsert.insertId, sucursal_id, stock, precio, barra || null]
       );
 
-    // 🔁 Actualizar código para todos los gustos con mismo producto + gusto
+    // 🔁 Actualizar código de barra en todos los gustos del mismo producto
     if (codigo_barra) {
       await pool
         .promise()
@@ -113,6 +117,7 @@ router.post("/agregar", authenticate, authorizeAdmin, async (req, res) => {
     res.status(500).json({ error: "No se pudo agregar producto" });
   }
 });
+
 
 // 🔵 Eliminar gusto (solo admin)
 router.delete(
@@ -136,7 +141,6 @@ router.delete(
   }
 );
 
-// 🔵 Editar producto (parcial/flexible) — código único por sucursal
 router.post(
   "/editar/:gusto_id",
   authenticate,
@@ -144,7 +148,6 @@ router.post(
   async (req, res) => {
     const { gusto_id } = req.params;
 
-    // ✅ Normalización de campos
     const sucursal_id =
       req.body.sucursal_id ?? req.body.sucursalId ?? req.body.sucursal ?? null;
     const nuevoGustoRaw =
@@ -156,8 +159,8 @@ router.post(
       req.body.codigoBarra ??
       req.body.barcode ??
       undefined;
+    const barra = req.body.barra ?? null; // ✅ Nuevo campo opcional
 
-    // ✅ Coerciones (solo si vinieron)
     const stock = stockRaw !== undefined ? Number(stockRaw) : undefined;
     const precio = precioRaw !== undefined ? Number(precioRaw) : undefined;
     const nuevoGusto =
@@ -171,25 +174,24 @@ router.post(
       stock,
       precio,
       codigo_barra,
+      barra, // ✅
     });
 
-    // ¿Qué se quiere actualizar?
     const quiereActualizarGusto =
       nuevoGusto !== null || codigo_barra !== undefined;
-    const quiereActualizarStock = stock !== undefined || precio !== undefined;
+    const quiereActualizarStock =
+      stock !== undefined || precio !== undefined || barra !== undefined;
 
     if (!quiereActualizarGusto && !quiereActualizarStock) {
       return res.status(400).json({ error: "No hay campos para actualizar." });
     }
 
-    // Si se toca stock/precio, necesitamos sucursal_id
     if (quiereActualizarStock && !sucursal_id) {
       return res.status(400).json({
         error: "Para actualizar stock o precio se requiere sucursal_id.",
       });
     }
 
-    // Validaciones básicas
     if (precio !== undefined && !Number.isFinite(precio)) {
       return res.status(400).json({ error: "Precio inválido." });
     }
@@ -201,7 +203,6 @@ router.post(
     }
 
     try {
-      // 🔎 Validar código de barras SOLO por sucursal (no global)
       if (codigo_barra !== undefined) {
         if (!sucursal_id) {
           return res.status(400).json({
@@ -213,9 +214,9 @@ router.post(
           `SELECT g.id
            FROM gustos g
            JOIN stock st ON st.gusto_id = g.id
-          WHERE g.codigo_barra = ?
-            AND st.sucursal_id = ?
-            AND g.id != ?`,
+           WHERE g.codigo_barra = ?
+             AND st.sucursal_id = ?
+             AND g.id != ?`,
           [codigo_barra, sucursal_id, gusto_id]
         );
         if (codigo_barra && dupeSucursal.length > 0) {
@@ -225,7 +226,6 @@ router.post(
         }
       }
 
-      // 🧩 1) Actualizar tabla GUSTOS si corresponde
       if (quiereActualizarGusto) {
         const sets = [];
         const params = [];
@@ -246,7 +246,6 @@ router.post(
         }
       }
 
-      // 🧩 2) Actualizar tabla STOCK si corresponde
       if (quiereActualizarStock) {
         const sets = [];
         const params = [];
@@ -258,6 +257,11 @@ router.post(
           sets.push("precio = ?");
           params.push(precio);
         }
+        if (barra !== undefined) {
+          sets.push("barra = ?"); // ✅
+          params.push(barra || null); // ✅
+        }
+
         params.push(gusto_id, sucursal_id);
 
         const [upd] = await pool
@@ -270,18 +274,12 @@ router.post(
           );
 
         if (upd.affectedRows === 0) {
-          // Si no existe la fila de stock para ese gusto en esa sucursal, podés crearla automáticamente:
-          // await pool.promise().query(
-          //   "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
-          //   [gusto_id, sucursal_id, stock ?? 0, precio ?? 0]
-          // );
           return res
             .status(404)
             .json({ error: "No existe stock para ese gusto en esa sucursal." });
         }
       }
 
-      // (Opcional) devolver el registro actualizado
       const [result] = await pool.promise().query(
         `SELECT 
          p.id AS producto_id,
@@ -291,6 +289,7 @@ router.post(
          g.codigo_barra,
          st.cantidad AS stock,
          st.precio AS precio,
+         st.barra,                      -- ✅ incluirlo si querés devolverlo también
          s.id AS sucursal_id,
          s.nombre AS sucursal
        FROM gustos g
@@ -313,6 +312,9 @@ router.post(
     }
   }
 );
+
+
+
 
 // 🔵 Ver productos disponibles por sucursal
 router.get("/disponibles", authenticate, async (req, res) => {
@@ -490,8 +492,11 @@ router.get("/pods-por-sucursal", authenticate, async (req, res) => {
   const onlyStock = String(solo_con_stock ?? "1") !== "0";
 
   // ✅ agrupar seguro
-  const groupMode =
-    String(agrupar).toLowerCase() === "gusto" ? "gusto" : "modelo";
+const agruparNormalizado = String(agrupar).toLowerCase();
+const groupMode = ["modelo", "gusto", "barra"].includes(agruparNormalizado)
+  ? agruparNormalizado
+  : "modelo";
+
 
   // ✅ paginado seguro
   let pageNum = Number(page) || 0;
@@ -551,6 +556,20 @@ router.get("/pods-por-sucursal", authenticate, async (req, res) => {
     ${whereSql}
     GROUP BY s.id, s.nombre, p.id, p.nombre
   `;
+const groupByBarra = `
+  SELECT
+    s.id     AS sucursal_id,
+    s.nombre AS sucursal,
+    IFNULL(st.barra, 'Sin barra') AS barra,
+    p.nombre AS pod,
+    SUM(st.cantidad) AS total
+  FROM productos p
+  JOIN gustos g      ON g.producto_id = p.id
+  JOIN stock  st     ON st.gusto_id   = g.id
+  JOIN sucursales s  ON s.id          = st.sucursal_id
+  ${whereSql}
+  GROUP BY s.id, s.nombre, st.barra, p.id, p.nombre
+`;
 
   const groupByGusto = `
     SELECT
@@ -566,7 +585,12 @@ router.get("/pods-por-sucursal", authenticate, async (req, res) => {
     GROUP BY s.id, s.nombre, p.id, p.nombre, g.id, g.nombre
   `;
 
-  let sql = groupMode === "gusto" ? groupByGusto : groupByModelo;
+let sql =
+  groupMode === "gusto"
+    ? groupByGusto
+    : groupMode === "barra"
+    ? groupByBarra
+    : groupByModelo;
 
   // 🚦 stock > 0 usando HAVING sobre el agregado
   if (onlyStock) sql += ` HAVING SUM(st.cantidad) > 0`;
