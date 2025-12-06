@@ -509,29 +509,32 @@ router.get("/pagos/pendientes", authenticate, async (req, res) => {
 
 
 // POST que recibe el pago desde n8n
-router.post("/pagos-mp", async (req, res) => {
-  try {
-    const { monto, fecha, raw } = req.body;
+router.post("/pagos-mp", (req, res) => {
+  const { monto, fecha, raw } = req.body;
 
-    if (!monto) {
-      return res.status(400).json({ error: "Falta monto" });
-    }
-
-    // fecha viene como string de milisegundos, ej: "1737683129000"
-    const fechaDate = fecha ? new Date(Number(fecha)) : new Date();
-
-    const [result] = await pool.query(
-      `INSERT INTO pagos_mp (monto, fecha_email, raw_body)
-       VALUES (?, ?, ?)`,
-      [monto, fechaDate, raw || null]
-    );
-
-    res.json({ ok: true, id: result.insertId });
-  } catch (err) {
-    console.error("Error /pagos-mp:", err);
-    res.status(500).json({ error: "Error interno" });
+  if (!monto) {
+    return res.status(400).json({ error: "Falta monto" });
   }
+
+  // fecha viene como string de milisegundos, ej: "1737683129000"
+  const fechaDate = fecha ? new Date(Number(fecha)) : new Date();
+
+  pool.query(
+    `INSERT INTO pagos_mp (monto, fecha_email, raw_body)
+     VALUES (?, ?, ?)`,
+    [monto, fechaDate, raw || null],
+    (err, result) => {
+      if (err) {
+        console.error("Error /pagos-mp:", err);
+        return res.status(500).json({ error: "Error interno" });
+      }
+
+      return res.json({ ok: true, id: result.insertId });
+    }
+  );
 });
+
+
 
 
 module.exports = router;
