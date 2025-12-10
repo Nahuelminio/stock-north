@@ -110,6 +110,75 @@ router.get("/ventas-mensuales", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener ventas mensuales" });
   }
 });
+// 🔵 Ventas semanales (solo de su sucursal, salvo admin)
+router.get("/ventas-semanales", authenticate, async (req, res) => {
+  let { semana, anio } = req.query;
+  const { sucursalId, rol } = req.user;
+
+  try {
+    // Si no mandan año/semana, uso la fecha actual
+    const hoy = new Date();
+    if (!anio) anio = hoy.getFullYear();
+
+    if (!semana) {
+      // cálculo de semana ISO aproximado
+      const fechaUTC = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()));
+      const diaSemana = fechaUTC.getUTCDay() || 7; // domingo = 7
+      fechaUTC.setUTCDate(fechaUTC.getUTCDate() + 4 - diaSemana);
+      const inicioAno = new Date(Date.UTC(fechaUTC.getUTCFullYear(), 0, 1));
+      semana = Math.ceil(((fechaUTC - inicioAno) / 86400000 + 1) / 7);
+    }
+
+    semana = Number(semana);
+    anio = Number(anio);
+
+    if (!Number.isInteger(semana) || semana < 1 || semana > 53) {
+      return res.status(400).json({ error: "Semana inválida" });
+    }
+    if (!Number.isInteger(anio) || anio < 2000) {
+      return res.status(400).json({ error: "Año inválido" });
+    }
+
+    let sql = `
+      SELECT
+        DAYOFWEEK(v.fecha) AS numero_dia,
+        DATE_FORMAT(v.fecha, '%W') AS dia_semana,
+        SUM(v.cantidad * COALESCE(v.precio_unitario, st.precio, 0)) AS total_ventas
+      FROM ventas v
+      JOIN sucursales s 
+        ON v.sucursal_id = s.id
+      LEFT JOIN stock st 
+        ON st.gusto_id = v.gusto_id 
+       AND st.sucursal_id = v.sucursal_id
+      WHERE YEAR(v.fecha) = ?
+        AND WEEK(v.fecha, 1) = ?
+    `;
+    const params = [anio, semana];
+
+    // Si NO es admin, solo su sucursal
+    if (rol !== "admin") {
+      sql += " AND v.sucursal_id = ?";
+      params.push(Number(sucursalId));
+    }
+
+    sql += `
+      GROUP BY numero_dia, dia_semana
+      ORDER BY numero_dia
+    `;
+
+    const [rows] = await pool.promise().query(sql, params);
+
+    const respuesta = rows.map((r) => ({
+      dia: r.dia_semana,                 // ej: Monday, Tuesday (según locale MySQL)
+      total: Number(r.total_ventas) || 0
+    }));
+
+    res.json(respuesta);
+  } catch (e) {
+    console.error("❌ Error ventas semanales:", e);
+    res.status(500).json({ error: "Error al obtener ventas semanales" });
+  }
+});
 
 router.get("/historial", authenticate, async (req, res) => {
   const { sucursalId, rol } = req.user; // del token
