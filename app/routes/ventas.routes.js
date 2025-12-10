@@ -231,7 +231,6 @@ router.get("/historial", authenticate, async (req, res) => {
   }
 });
 
-module.exports = router;
 router.get("/ventas-mensuales", authenticate, async (req, res) => {
   const { mes, anio } = req.query;
   const { sucursalId, rol } = req.user;
