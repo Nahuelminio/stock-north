@@ -110,27 +110,33 @@ router.get("/ventas-mensuales", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener ventas mensuales" });
   }
 });
-// 🔵 Ventas semanales (solo de su sucursal, salvo admin)
+// GET /ventas-semanales?anio=2025&semana=42
 router.get("/ventas-semanales", authenticate, async (req, res) => {
   let { semana, anio } = req.query;
   const { sucursalId, rol } = req.user;
 
   try {
-    // Si no mandan año/semana, uso la fecha actual
     const hoy = new Date();
+
     if (!anio) anio = hoy.getFullYear();
+    anio = Number(anio);
 
     if (!semana) {
-      // cálculo de semana ISO aproximado
-      const fechaUTC = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()));
+      // Si no viene semana, calculo la semana ISO actual
+      const fechaUTC = new Date(
+        Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate())
+      );
       const diaSemana = fechaUTC.getUTCDay() || 7; // domingo = 7
       fechaUTC.setUTCDate(fechaUTC.getUTCDate() + 4 - diaSemana);
-      const inicioAno = new Date(Date.UTC(fechaUTC.getUTCFullYear(), 0, 1));
-      semana = Math.ceil(((fechaUTC - inicioAno) / 86400000 + 1) / 7);
+      const inicioAno = new Date(
+        Date.UTC(fechaUTC.getUTCFullYear(), 0, 1)
+      );
+      semana = Math.ceil(
+        ((fechaUTC - inicioAno) / 86400000 + 1) / 7
+      );
     }
 
     semana = Number(semana);
-    anio = Number(anio);
 
     if (!Number.isInteger(semana) || semana < 1 || semana > 53) {
       return res.status(400).json({ error: "Semana inválida" });
@@ -139,39 +145,85 @@ router.get("/ventas-semanales", authenticate, async (req, res) => {
       return res.status(400).json({ error: "Año inválido" });
     }
 
+    // 👉 Calcular lunes y domingo de esa semana ISO
+    const getMondayOfISOWeek = (week, year) => {
+      const simple = new Date(year, 0, 1 + (week - 1) * 7);
+      const dow = simple.getDay(); // 0=domingo .. 6=sábado
+      const ISOweekStart = new Date(simple);
+      let diff;
+      if (dow <= 4 && dow !== 0) {
+        // lunes-martes-miércoles-jueves
+        diff = 1 - dow;
+      } else if (dow === 0) {
+        // domingo
+        diff = -6;
+      } else {
+        // viernes-sábado
+        diff = 8 - dow;
+      }
+      ISOweekStart.setDate(simple.getDate() + diff);
+      return ISOweekStart;
+    };
+
+    const inicioSemana = getMondayOfISOWeek(semana, anio); // lunes
+    const finSemana = new Date(inicioSemana);
+    finSemana.setDate(inicioSemana.getDate() + 6); // domingo
+
+    const inicioStr = inicioSemana.toISOString().slice(0, 10); // YYYY-MM-DD
+    const finStr = finSemana.toISOString().slice(0, 10);
+
+    console.log(
+      "📅 /ventas-semanales => semana:",
+      semana,
+      "año:",
+      anio,
+      "rango:",
+      inicioStr,
+      "->",
+      finStr,
+      "rol:",
+      rol,
+      "sucursalId:",
+      sucursalId
+    );
+
+    // 👉 Query por rango de fechas
     let sql = `
       SELECT
-        DAYOFWEEK(v.fecha) AS numero_dia,
-        DATE_FORMAT(v.fecha, '%W') AS dia_semana,
-        SUM(v.cantidad * COALESCE(v.precio_unitario, st.precio, 0)) AS total_ventas
+        DATE_FORMAT(v.fecha, '%W')      AS dia_semana,
+        SUM(
+          v.cantidad * COALESCE(v.precio_unitario, st.precio, 0)
+        ) AS total_ventas
       FROM ventas v
-      JOIN sucursales s 
-        ON v.sucursal_id = s.id
-      LEFT JOIN stock st 
-        ON st.gusto_id = v.gusto_id 
+      LEFT JOIN stock st
+        ON st.gusto_id = v.gusto_id
        AND st.sucursal_id = v.sucursal_id
-      WHERE YEAR(v.fecha) = ?
-        AND WEEK(v.fecha, 1) = ?
+      WHERE DATE(v.fecha) BETWEEN ? AND ?
     `;
-    const params = [anio, semana];
+    const params = [inicioStr, finStr];
 
-    // Si NO es admin, solo su sucursal
+    // Si NO es admin, filtro por sucursal
     if (rol !== "admin") {
       sql += " AND v.sucursal_id = ?";
       params.push(Number(sucursalId));
     }
 
     sql += `
-      GROUP BY numero_dia, dia_semana
-      ORDER BY numero_dia
+      GROUP BY dia_semana
+      ORDER BY FIELD(
+        dia_semana,
+        'Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'
+      )
     `;
 
     const [rows] = await pool.promise().query(sql, params);
 
     const respuesta = rows.map((r) => ({
-      dia: r.dia_semana,                 // ej: Monday, Tuesday (según locale MySQL)
+      dia: r.dia_semana,                 // ej: Monday, Tuesday
       total: Number(r.total_ventas) || 0
     }));
+
+    console.log("📊 /ventas-semanales resultado:", respuesta);
 
     res.json(respuesta);
   } catch (e) {
@@ -179,6 +231,7 @@ router.get("/ventas-semanales", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener ventas semanales" });
   }
 });
+
 
 router.get("/historial", authenticate, async (req, res) => {
   const { sucursalId, rol } = req.user; // del token
