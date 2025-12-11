@@ -4,8 +4,8 @@ const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
 
 const N8N_WEBHOOK_URL =
-  process.env.N8N_WEBHOOK_URL ||
   "https://nahuelminio04.app.n8n.cloud/webhook/87cb3b26-fadf-43a8-950c-2b181ca9420d";
+
 
 // Si tu Node no tiene fetch nativo (Node < 18), descomentá esto:
 // const fetch = (...args) =>
