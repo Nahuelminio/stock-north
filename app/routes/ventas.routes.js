@@ -3,8 +3,14 @@ const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
 
-// 🔵 Vender producto (de su sucursal) — con validación de cantidad
-// 🔵 Vender producto (de su sucursal) — con validación de cantidad y conexión promisificada
+const N8N_WEBHOOK_URL =
+  process.env.N8N_WEBHOOK_URL ||
+  "https://nahuelminio04.app.n8n.cloud/webhook/b176cc10-33e8-4b59-9047-17d5eed209ee";
+
+// Si tu Node no tiene fetch nativo (Node < 18), descomentá esto:
+// const fetch = (...args) =>
+//   import("node-fetch").then(({ default: f }) => f(...args));
+
 router.post("/vender", authenticate, async (req, res) => {
   const { rol, sucursalId: sucursalIdDesdeToken } = req.user;
 
@@ -26,7 +32,6 @@ router.post("/vender", authenticate, async (req, res) => {
     return res.status(400).json({ error: "sucursal_id inválido" });
   }
 
-  // 👇 clave: usá el pool promisificado para la conexión
   const conn = await pool.promise().getConnection();
   try {
     await conn.beginTransaction();
@@ -61,6 +66,58 @@ router.post("/vender", authenticate, async (req, res) => {
     );
 
     await conn.commit();
+
+    // 🔹 NUEVO: obtener nombres para mandar a n8n (NO afecta a la venta)
+    let info = {};
+    try {
+      const [rowsInfo] = await conn.query(
+        `
+        SELECT 
+          g.nombre AS gusto_nombre,
+          p.nombre AS modelo_nombre,
+          s.nombre AS sucursal_nombre
+        FROM ventas v
+        JOIN gustos g      ON v.gusto_id = g.id
+        JOIN productos p   ON g.producto_id = p.id
+        JOIN sucursales s  ON v.sucursal_id = s.id
+        WHERE v.id = ?
+        `,
+        [ins.insertId]
+      );
+      info = rowsInfo?.[0] || {};
+    } catch (e) {
+      console.error("Error obteniendo info para n8n:", e.message || e);
+    }
+
+    // 🔹 NUEVO: armar payload para n8n
+    const payload = {
+      venta_id: ins.insertId,
+      gusto_id: gustoId,
+      sucursal_id: sucursalIdFinal,
+      cantidad,
+      precio_unitario: stockRow.precio,
+      fecha_iso: new Date().toISOString(),
+
+      modelo_nombre: info?.modelo_nombre || null,
+      gusto_nombre: info?.gusto_nombre || null,
+      sucursal_nombre: info?.sucursal_nombre || null,
+    };
+
+    // 🔹 NUEVO: enviar a n8n (fire-and-forget)
+    (async () => {
+      if (!N8N_WEBHOOK_URL) return;
+      try {
+        await fetch(N8N_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } catch (err) {
+        console.error("Error enviando venta a n8n:", err.message || err);
+      }
+    })();
+
+    // 🔙 Respuesta al frontend: IGUAL que antes
     return res.json({
       mensaje: "✅ Venta registrada",
       venta_id: ins.insertId,
@@ -74,6 +131,7 @@ router.post("/vender", authenticate, async (req, res) => {
     conn.release();
   }
 });
+
 
 // 🔵 Ventas mensuales (solo de su sucursal, salvo admin)
 router.get("/ventas-mensuales", authenticate, async (req, res) => {
@@ -128,12 +186,8 @@ router.get("/ventas-semanales", authenticate, async (req, res) => {
       );
       const diaSemana = fechaUTC.getUTCDay() || 7; // domingo = 7
       fechaUTC.setUTCDate(fechaUTC.getUTCDate() + 4 - diaSemana);
-      const inicioAno = new Date(
-        Date.UTC(fechaUTC.getUTCFullYear(), 0, 1)
-      );
-      semana = Math.ceil(
-        ((fechaUTC - inicioAno) / 86400000 + 1) / 7
-      );
+      const inicioAno = new Date(Date.UTC(fechaUTC.getUTCFullYear(), 0, 1));
+      semana = Math.ceil(((fechaUTC - inicioAno) / 86400000 + 1) / 7);
     }
 
     semana = Number(semana);
@@ -219,8 +273,8 @@ router.get("/ventas-semanales", authenticate, async (req, res) => {
     const [rows] = await pool.promise().query(sql, params);
 
     const respuesta = rows.map((r) => ({
-      dia: r.dia_semana,                 // ej: Monday, Tuesday
-      total: Number(r.total_ventas) || 0
+      dia: r.dia_semana, // ej: Monday, Tuesday
+      total: Number(r.total_ventas) || 0,
     }));
 
     console.log("📊 /ventas-semanales resultado:", respuesta);
@@ -231,7 +285,6 @@ router.get("/ventas-semanales", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener ventas semanales" });
   }
 });
-
 
 router.get("/historial", authenticate, async (req, res) => {
   const { sucursalId, rol } = req.user; // del token
