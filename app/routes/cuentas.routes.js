@@ -6,34 +6,39 @@ const router = express.Router();
 
 // GET /cuentas (sucursal ve solo su sucursal)
 router.get("/cuentas", authenticate, async (req, res) => {
+  const { estado = "activas" } = req.query;
+
   try {
     const isAdmin = req.user.rol === "admin";
-    const sucursalId = isAdmin
-      ? req.query.sucursalId || null
-      : req.user.sucursalId;
+    const sucursalId = req.user.sucursalId;
 
-    if (!isAdmin && !sucursalId) {
-      return res.status(400).json({ error: "Usuario sin sucursal asignada" });
+    let where = [];
+    let params = [];
+
+    if (!isAdmin) {
+      where.push("cc.sucursal_id = ?");
+      params.push(sucursalId);
     }
 
-    const sql = sucursalId
-      ? `SELECT id, cliente_nombre, telefono, saldo, updated_at
-         FROM cuentas_corrientes
-         WHERE sucursal_id=?
-         ORDER BY saldo DESC, cliente_nombre ASC`
-      : `SELECT id, sucursal_id, cliente_nombre, telefono, saldo, updated_at
-         FROM cuentas_corrientes
-         ORDER BY sucursal_id, saldo DESC, cliente_nombre ASC`;
+    if (estado === "activas") where.push("cc.activo = 1");
+    if (estado === "archivadas") where.push("cc.activo = 0");
+    // "todas" no agrega filtro
 
-    const params = sucursalId ? [sucursalId] : [];
+    const sql = `
+      SELECT cc.*
+      FROM cuentas_corrientes cc
+      ${where.length ? "WHERE " + where.join(" AND ") : ""}
+      ORDER BY cc.saldo DESC, cc.cliente_nombre ASC
+    `;
+
     const [rows] = await pool.promise().query(sql, params);
-
     res.json(rows);
-  } catch (error) {
-    console.error("❌ Error GET /cuentas:", error);
-    res.status(500).json({ error: "Error al listar cuentas" });
+  } catch (e) {
+    console.error("GET /cuentas", e);
+    res.status(500).json({ error: "Error al obtener cuentas" });
   }
 });
+
 
 // POST /cuentas (crea en la sucursal del usuario)
 router.post("/cuentas", authenticate, async (req, res) => {
@@ -173,5 +178,128 @@ router.get("/cuentas/:id/movimientos", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al obtener movimientos" });
   }
 });
+router.put("/cuentas/:id", authenticate, async (req, res) => {
+  const { id } = req.params;
+  const { cliente_nombre, telefono, notas } = req.body;
+
+  if (!cliente_nombre?.trim())
+    return res.status(400).json({ error: "Falta nombre" });
+
+  try {
+    const isAdmin = req.user.rol === "admin";
+    const sucursalId = req.user.sucursalId;
+
+    // validar pertenencia
+    const [rows] = await pool
+      .promise()
+      .query(`SELECT id, sucursal_id FROM cuentas_corrientes WHERE id = ?`, [
+        id,
+      ]);
+    if (!rows.length)
+      return res.status(404).json({ error: "Cuenta no encontrada" });
+
+    if (!isAdmin && rows[0].sucursal_id !== sucursalId) {
+      return res.status(403).json({ error: "No autorizado" });
+    }
+
+    await pool.promise().query(
+      `UPDATE cuentas_corrientes
+       SET cliente_nombre = ?, telefono = ?, notas = ?
+       WHERE id = ?`,
+      [
+        cliente_nombre.trim(),
+        (telefono || "").trim(),
+        (notas || "").trim(),
+        id,
+      ],
+    );
+
+    res.json({ ok: true });
+  } catch (e) {
+    // si choca UNIQUE(sucursal_id, cliente_nombre) al renombrar:
+    if (e?.code === "ER_DUP_ENTRY") {
+      return res
+        .status(409)
+        .json({ error: "Ya existe ese cliente en la sucursal" });
+    }
+    console.error("PUT /cuentas/:id", e);
+    res.status(500).json({ error: "Error al editar cuenta" });
+  }
+});
+router.patch("/cuentas/:id/archivar", authenticate, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const isAdmin = req.user.rol === "admin";
+    const sucursalId = req.user.sucursalId;
+
+    const [rows] = await pool
+      .promise()
+      .query(
+        `SELECT id, sucursal_id, saldo, activo FROM cuentas_corrientes WHERE id = ?`,
+        [id],
+      );
+    if (!rows.length)
+      return res.status(404).json({ error: "Cuenta no encontrada" });
+
+    const cuenta = rows[0];
+    if (!isAdmin && cuenta.sucursal_id !== sucursalId) {
+      return res.status(403).json({ error: "No autorizado" });
+    }
+
+    if (Number(cuenta.saldo) !== 0) {
+      return res
+        .status(400)
+        .json({ error: "No se puede archivar con saldo distinto de 0" });
+    }
+
+    if (cuenta.activo === 0) return res.json({ ok: true });
+
+    await pool
+      .promise()
+      .query(
+        `UPDATE cuentas_corrientes SET activo = 0, archivado_at = NOW() WHERE id = ?`,
+        [id],
+      );
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("PATCH /cuentas/:id/archivar", e);
+    res.status(500).json({ error: "Error al archivar" });
+  }
+});
+router.patch("/cuentas/:id/reactivar", authenticate, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const isAdmin = req.user.rol === "admin";
+    const sucursalId = req.user.sucursalId;
+
+    const [rows] = await pool
+      .promise()
+      .query(`SELECT id, sucursal_id FROM cuentas_corrientes WHERE id = ?`, [
+        id,
+      ]);
+    if (!rows.length)
+      return res.status(404).json({ error: "Cuenta no encontrada" });
+
+    if (!isAdmin && rows[0].sucursal_id !== sucursalId) {
+      return res.status(403).json({ error: "No autorizado" });
+    }
+
+    await pool
+      .promise()
+      .query(
+        `UPDATE cuentas_corrientes SET activo = 1, archivado_at = NULL WHERE id = ?`,
+        [id],
+      );
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("PATCH /cuentas/:id/reactivar", e);
+    res.status(500).json({ error: "Error al reactivar" });
+  }
+});
+
 
 module.exports = router;
