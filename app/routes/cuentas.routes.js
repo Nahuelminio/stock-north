@@ -1,19 +1,13 @@
 const express = require("express");
 const pool = require("../db");
-const authenticate = require("../middlewares/authenticate"); // ajustá la ruta real
+const authenticate = require("../middlewares/authenticate"); // ajustá la ruta
 
 const router = express.Router();
 
-/**
- * GET /cuentas
- * - sucursal: SOLO sus cuentas (req.user.sucursalId)
- * - admin: puede ver todas o filtrar con ?sucursalId=#
- */
+// GET /cuentas (sucursal ve solo su sucursal)
 router.get("/cuentas", authenticate, async (req, res) => {
   try {
     const isAdmin = req.user.rol === "admin";
-
-    // si es admin, puede pasar sucursalId por query (opcional)
     const sucursalId = isAdmin
       ? req.query.sucursalId || null
       : req.user.sucursalId;
@@ -41,11 +35,7 @@ router.get("/cuentas", authenticate, async (req, res) => {
   }
 });
 
-/**
- * POST /cuentas
- * crea cuenta en la sucursal del usuario (no recibe sucursal_id)
- * admin opcionalmente puede enviar sucursalId en body
- */
+// POST /cuentas (crea en la sucursal del usuario)
 router.post("/cuentas", authenticate, async (req, res) => {
   try {
     const {
@@ -54,17 +44,13 @@ router.post("/cuentas", authenticate, async (req, res) => {
       notas,
       sucursalId: sucursalIdBody,
     } = req.body;
-
-    if (!cliente_nombre) {
+    if (!cliente_nombre)
       return res.status(400).json({ error: "Falta cliente_nombre" });
-    }
 
     const isAdmin = req.user.rol === "admin";
     const sucursalId = isAdmin ? sucursalIdBody || null : req.user.sucursalId;
 
-    if (!sucursalId) {
-      return res.status(400).json({ error: "Falta sucursalId" });
-    }
+    if (!sucursalId) return res.status(400).json({ error: "Falta sucursalId" });
 
     const [r] = await pool
       .promise()
@@ -85,17 +71,14 @@ router.post("/cuentas", authenticate, async (req, res) => {
   }
 });
 
-/**
- * POST /cuentas/:id/movimientos
- * sumar/restar deuda SOLO si la cuenta pertenece a la sucursal del usuario
- */
+// POST /cuentas/:id/movimientos (CARGO suma, PAGO resta; valida pertenencia a sucursal)
 router.post("/cuentas/:id/movimientos", authenticate, async (req, res) => {
   const cuentaId = req.params.id;
   const { tipo, monto, descripcion } = req.body;
 
   const montoNum = Number(monto);
-  if (!tipo || !["CARGO", "PAGO"].includes(tipo)) {
-    return res.status(400).json({ error: "Tipo inválido (usar CARGO o PAGO)" });
+  if (!["CARGO", "PAGO"].includes(tipo)) {
+    return res.status(400).json({ error: "Tipo inválido (CARGO o PAGO)" });
   }
   if (!montoNum || montoNum <= 0) {
     return res.status(400).json({ error: "Monto inválido" });
@@ -105,7 +88,6 @@ router.post("/cuentas/:id/movimientos", authenticate, async (req, res) => {
     const isAdmin = req.user.rol === "admin";
     const sucursalId = isAdmin ? null : req.user.sucursalId;
 
-    // Verificar que la cuenta sea de la sucursal (si no es admin)
     const [checkRows] = await pool
       .promise()
       .query(
@@ -158,10 +140,7 @@ router.post("/cuentas/:id/movimientos", authenticate, async (req, res) => {
   }
 });
 
-/**
- * GET /cuentas/:id/movimientos
- * historial SOLO de su sucursal
- */
+// GET /cuentas/:id/movimientos (historial)
 router.get("/cuentas/:id/movimientos", authenticate, async (req, res) => {
   const cuentaId = req.params.id;
 
@@ -181,7 +160,7 @@ router.get("/cuentas/:id/movimientos", authenticate, async (req, res) => {
     if (!checkRows[0]) return res.status(403).json({ error: "No autorizado" });
 
     const [rows] = await pool.promise().query(
-      `SELECT id, tipo, monto, descripcion, fecha, creado_por
+      `SELECT id, tipo, monto, descripcion, fecha
        FROM cuenta_movimientos
        WHERE cuenta_id=?
        ORDER BY fecha DESC`,

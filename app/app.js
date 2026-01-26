@@ -33,6 +33,7 @@ app.use("/sucursales", require("./routes/sucursales.routes"));
 app.use("/", require("./routes/importar.routes"));
 app.use("/admin/stock", require("./routes/adminStock.routes"));
 app.use("/", require("./routes/public.routes"));
+app.use("/", require("./routes/cuentas.routes"));
 
 
 
