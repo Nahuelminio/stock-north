@@ -352,5 +352,52 @@ router.patch("/cuentas/:id/reactivar", authenticate, async (req, res) => {
     res.status(500).json({ error: "Error al reactivar" });
   }
 });
+// PATCH /cuentas/:id/marcar-recordatorio
+router.patch(
+  "/cuentas/:id/marcar-recordatorio",
+  authenticate,
+  async (req, res) => {
+    const { id } = req.params;
 
+    try {
+      const isAdmin = req.user.rol === "admin";
+      const sucursalId = req.user.sucursalId;
+
+      const [rows] = await pool.promise().query(
+        `SELECT id, sucursal_id, recordatorios_enviados
+         FROM cuentas_corrientes
+         WHERE id = ?`,
+        [id],
+      );
+
+      if (!rows.length) {
+        return res.status(404).json({ error: "Cuenta no encontrada" });
+      }
+
+      const cuenta = rows[0];
+
+      if (!isAdmin && Number(cuenta.sucursal_id) !== Number(sucursalId)) {
+        return res.status(403).json({ error: "No autorizado" });
+      }
+
+      await pool.promise().query(
+        `UPDATE cuentas_corrientes
+         SET recordatorios_enviados = COALESCE(recordatorios_enviados, 0) + 1,
+             primer_recordatorio_at = CASE
+               WHEN COALESCE(recordatorios_enviados, 0) = 0
+               THEN NOW()
+               ELSE primer_recordatorio_at
+             END,
+             ultimo_recordatorio_at = NOW()
+         WHERE id = ?`,
+        [id],
+      );
+
+      res.json({ ok: true, mensaje: "✅ Recordatorio marcado" });
+    } catch (e) {
+      console.error("PATCH /cuentas/:id/marcar-recordatorio", e);
+      res.status(500).json({ error: "Error al marcar recordatorio" });
+    }
+  },
+);
 module.exports = router;
