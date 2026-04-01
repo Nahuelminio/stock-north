@@ -287,25 +287,32 @@ router.get("/ventas-semanales", authenticate, async (req, res) => {
 });
 
 router.get("/historial", authenticate, async (req, res) => {
-  const { sucursalId, rol } = req.user; // del token
-  const { sucursal_id } = req.query; // filtro opcional para admin
+  const { sucursalId, rol } = req.user;
+  const { sucursal_id, page = 1, limit = 50 } = req.query;
+
+  const pageNum = Math.max(1, parseInt(page) || 1);
+  const limitNum = Math.min(200, Math.max(1, parseInt(limit) || 50));
+  const offset = (pageNum - 1) * limitNum;
 
   try {
-    // Armamos condiciones de forma segura
     const where = [];
     const params = [];
 
     if (String(rol).toLowerCase() !== "admin") {
-      // Si NO es admin, fuerza su propia sucursal
       where.push("v.sucursal_id = ?");
       params.push(Number(sucursalId));
     } else if (sucursal_id) {
-      // Si es admin y pasó filtro
       where.push("v.sucursal_id = ?");
       params.push(Number(sucursal_id));
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const [countRows] = await pool.promise().query(
+      `SELECT COUNT(*) AS total FROM ventas v ${whereSql}`,
+      params
+    );
+    const total = countRows[0].total;
 
     const sql = `
       SELECT
@@ -314,23 +321,28 @@ router.get("/historial", authenticate, async (req, res) => {
         p.nombre AS producto,
         g.nombre AS gusto,
         v.cantidad,
-        -- ✅ precio: usa el guardado en la venta; si falta, toma el de stock
         COALESCE(v.precio_unitario, st.precio, 0) AS precio,
-        -- ✅ total: cantidad * precio efectivo
         (v.cantidad * COALESCE(v.precio_unitario, st.precio, 0)) AS total,
         v.fecha
       FROM ventas v
       JOIN gustos g      ON v.gusto_id = g.id
       JOIN productos p   ON g.producto_id = p.id
       JOIN sucursales s  ON v.sucursal_id = s.id
-      -- LEFT JOIN para respaldo de precio si la venta no tiene precio_unitario
       LEFT JOIN stock st ON st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id
       ${whereSql}
       ORDER BY v.fecha DESC
+      LIMIT ? OFFSET ?
     `;
 
-    const [rows] = await pool.promise().query(sql, params);
-    res.json(rows);
+    const [rows] = await pool.promise().query(sql, [...params, limitNum, offset]);
+
+    res.json({
+      data: rows,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum),
+    });
   } catch (e) {
     console.error("❌ Error historial ventas:", e);
     res.status(500).json({ error: "Error al obtener historial de ventas" });
