@@ -67,10 +67,10 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     // 1️⃣ Validaciones mínimas
     if (!sucursal)
       return res.status(400).json({ ok: false, msg: "Sucursal requerida" });
-    if (!barcode && (!modelo || !serie || !gusto))
+    if (!barcode && !gusto && !modelo)
       return res.status(400).json({
         ok: false,
-        msg: "Faltan datos. Enviá 'barcode' o (modelo, serie y gusto).",
+        msg: "Faltan datos. Enviá 'barcode' o al menos 'gusto' / 'modelo'.",
       });
 
     // 2️⃣ Normalizaciones
@@ -80,9 +80,9 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       return res.status(400).json({ ok: false, msg: "Cantidad inválida" });
 
     if (!barcode) {
-      modelo = String(modelo).toLowerCase().trim();
-      serie = String(serie).toLowerCase().trim();
-      gusto = String(gusto).toLowerCase().trim();
+      modelo = modelo ? String(modelo).toLowerCase().trim() : "";
+      serie  = serie  ? String(serie).toLowerCase().trim()  : "";
+      gusto  = gusto  ? String(gusto).toLowerCase().trim()  : "";
     } else {
       barcode = String(barcode).trim();
       if (!barcode)
@@ -95,25 +95,27 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     conn = await pool.promise().getConnection();
     await conn.beginTransaction();
 
-    // 🔹 Buscar sucursal
+    // 🔹 Buscar sucursal (por nombre, apodo o id numérico)
     const [sucRows] = await conn.query(
-      `SELECT id FROM sucursales WHERE LOWER(nombre)=? OR LOWER(apodo)=? LIMIT 1`,
+      `SELECT id, nombre FROM sucursales WHERE LOWER(nombre)=? OR LOWER(apodo)=? LIMIT 1`,
       [sucursal, sucursal]
     );
     if (!sucRows.length) {
       await conn.rollback();
-      return res.status(404).json({ ok: false, msg: "Sucursal no encontrada" });
+      return res.status(404).json({ ok: false, msg: `Sucursal no encontrada: "${sucursal}"` });
     }
     const sucursal_id = sucRows[0].id;
+    const sucursal_nombre = sucRows[0].nombre;
 
     // 🔹 Resolver producto/gusto
-    let producto_id, gusto_id;
+    let producto_id, gusto_id, producto_nombre_found, gusto_nombre_found;
 
     if (barcode) {
       // A) Buscar por código de barras
       const [rows] = await conn.query(
-        `SELECT g.id AS gusto_id, g.producto_id
+        `SELECT g.id AS gusto_id, g.producto_id, g.nombre AS gusto_nombre, p.nombre AS producto_nombre
          FROM gustos g
+         JOIN productos p ON p.id = g.producto_id
          WHERE g.codigo_barra = ?
          LIMIT 1`,
         [barcode]
@@ -122,66 +124,77 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
         await conn.rollback();
         return res.status(404).json({
           ok: false,
-          msg: "Gusto no encontrado para ese código de barras",
+          msg: `Código de barras no encontrado: ${barcode}`,
         });
       }
       gusto_id = rows[0].gusto_id;
       producto_id = rows[0].producto_id;
+      producto_nombre_found = rows[0].producto_nombre;
+      gusto_nombre_found = rows[0].gusto_nombre;
     } else {
-      // B) Buscar por texto laxo (sin espacios ni guiones)
+      // B) Búsqueda por texto con múltiples fallbacks
       const modeloNS = modelo.replace(/[\s-]+/g, "");
-      const serieNS = serie.replace(/[\s-]+/g, "");
+      const serieNS  = serie.replace(/[\s-]+/g, "");
       const gustoTxt = gusto;
 
-      const normSql = `
-        REPLACE(REPLACE(REPLACE(LOWER(CONCAT(p.nombre,' ',g.nombre)), ' ', ''), '-', ''), 'puffs', '')
-      `;
+      const normSql = `REPLACE(REPLACE(REPLACE(LOWER(CONCAT(p.nombre,' ',g.nombre)), ' ', ''), '-', ''), 'puffs', '')`;
+      const selectCols = `g.id AS gusto_id, g.producto_id, g.nombre AS gusto_nombre, p.nombre AS producto_nombre`;
 
       let found = null;
 
-      const [t1] = await conn.query(
-        `SELECT g.id AS gusto_id, g.producto_id
-         FROM gustos g
-         JOIN productos p ON p.id = g.producto_id
-         WHERE ${normSql} LIKE ? AND ${normSql} LIKE ? AND LOWER(g.nombre) LIKE ?
-         LIMIT 1`,
-        [`%${modeloNS}%`, `%${serieNS}%`, `%${gustoTxt}%`]
-      );
-      if (t1.length) found = t1[0];
+      // T1: modelo + serie + gusto
+      if (modeloNS && serieNS && gustoTxt) {
+        const [t1] = await conn.query(
+          `SELECT ${selectCols} FROM gustos g JOIN productos p ON p.id = g.producto_id
+           WHERE ${normSql} LIKE ? AND ${normSql} LIKE ? AND LOWER(g.nombre) LIKE ? LIMIT 1`,
+          [`%${modeloNS}%`, `%${serieNS}%`, `%${gustoTxt}%`]
+        );
+        if (t1.length) found = t1[0];
+      }
 
-      if (!found) {
+      // T2: serie + gusto
+      if (!found && serieNS && gustoTxt) {
         const [t2] = await conn.query(
-          `SELECT g.id AS gusto_id, g.producto_id
-           FROM gustos g
-           JOIN productos p ON p.id = g.producto_id
-           WHERE ${normSql} LIKE ? AND LOWER(g.nombre) LIKE ?
-           LIMIT 1`,
+          `SELECT ${selectCols} FROM gustos g JOIN productos p ON p.id = g.producto_id
+           WHERE ${normSql} LIKE ? AND LOWER(g.nombre) LIKE ? LIMIT 1`,
           [`%${serieNS}%`, `%${gustoTxt}%`]
         );
         if (t2.length) found = t2[0];
       }
 
-      if (!found) {
+      // T3: modelo + gusto
+      if (!found && modeloNS && gustoTxt) {
         const [t3] = await conn.query(
-          `SELECT g.id AS gusto_id, g.producto_id
-           FROM gustos g
-           JOIN productos p ON p.id = g.producto_id
-           WHERE ${normSql} LIKE ? AND LOWER(g.nombre) LIKE ?
-           LIMIT 1`,
+          `SELECT ${selectCols} FROM gustos g JOIN productos p ON p.id = g.producto_id
+           WHERE ${normSql} LIKE ? AND LOWER(g.nombre) LIKE ? LIMIT 1`,
           [`%${modeloNS}%`, `%${gustoTxt}%`]
         );
         if (t3.length) found = t3[0];
       }
 
+      // T4: solo gusto (más amplio, último recurso)
+      if (!found && gustoTxt) {
+        const [t4] = await conn.query(
+          `SELECT ${selectCols} FROM gustos g JOIN productos p ON p.id = g.producto_id
+           WHERE LOWER(g.nombre) LIKE ? LIMIT 1`,
+          [`%${gustoTxt}%`]
+        );
+        if (t4.length) found = t4[0];
+      }
+
       if (!found) {
         await conn.rollback();
-        return res
-          .status(404)
-          .json({ ok: false, msg: "Producto no encontrado (modelo/serie)" });
+        const terminos = [modelo, serie, gusto].filter(Boolean).join(" / ");
+        return res.status(404).json({
+          ok: false,
+          msg: `Producto no encontrado: "${terminos}". Verificá el nombre o usá el código de barras.`,
+        });
       }
 
       gusto_id = found.gusto_id;
       producto_id = found.producto_id;
+      producto_nombre_found = found.producto_nombre;
+      gusto_nombre_found = found.gusto_nombre;
     }
 
     // 🔹 Verificar stock (modelo de movimientos)
@@ -233,13 +246,17 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     // ✅ Éxito
     return res.json({
       ok: true,
-      msg: "Venta registrada correctamente ✅",
+      msg: "Venta registrada correctamente",
       data: {
         venta_id: ventaRes.insertId,
         producto_id,
         gusto_id,
         sucursal_id,
+        sucursal_nombre,
+        producto_nombre: producto_nombre_found,
+        gusto_nombre: gusto_nombre_found,
         cantidad,
+        precio_unitario: precioUnit,
         metodo: barcode ? "barcode" : "texto",
         stock_restante: stockDisponible - cantidad,
       },
