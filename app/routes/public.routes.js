@@ -53,6 +53,7 @@ router.get("/public/sucursales", publicCors, async (_req, res) => {
 // 📦 Registrar venta pública
 // =========================
 router.post("/public/registrar-venta", publicCors, async (req, res) => {
+  res.set("Cache-Control", "no-transform, no-store");
   let conn;
   try {
     let {
