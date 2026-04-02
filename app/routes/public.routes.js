@@ -7,6 +7,20 @@ const pool = require("../db");
 // CORS SOLO para endpoints públicos
 const publicCors = cors({ origin: "*", credentials: false });
 
+// Helper para forzar respuesta JSON sin compresión (evita que Render/nginx gzipee)
+function sendJson(res, status, data) {
+  const body = JSON.stringify(data);
+  const len = Buffer.byteLength(body, "utf8");
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Encoding": "identity",
+    "Content-Length": String(len),
+    "Cache-Control": "no-transform, no-store",
+    "Connection": "close",
+  });
+  res.end(body);
+}
+
 /* =========================
    Helpers
 ========================= */
@@ -53,7 +67,6 @@ router.get("/public/sucursales", publicCors, async (_req, res) => {
 // 📦 Registrar venta pública
 // =========================
 router.post("/public/registrar-venta", publicCors, async (req, res) => {
-  res.set("Cache-Control", "no-transform, no-store");
   let conn;
   try {
     let {
@@ -67,9 +80,9 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
 
     // 1️⃣ Validaciones mínimas
     if (!sucursal)
-      return res.status(400).json({ ok: false, msg: "Sucursal requerida" });
+      return sendJson(res, 400, { ok: false, msg: "Sucursal requerida" });
     if (!barcode && !gusto && !modelo)
-      return res.status(400).json({
+      return sendJson(res, 400, {
         ok: false,
         msg: "Faltan datos. Enviá 'barcode' o al menos 'gusto' / 'modelo'.",
       });
@@ -78,7 +91,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     sucursal = String(sucursal).toLowerCase().trim();
     cantidad = Number(cantidad);
     if (!Number.isInteger(cantidad) || cantidad <= 0)
-      return res.status(400).json({ ok: false, msg: "Cantidad inválida" });
+      return sendJson(res, 400, { ok: false, msg: "Cantidad inválida" });
 
     if (!barcode) {
       modelo = modelo ? String(modelo).toLowerCase().trim() : "";
@@ -87,9 +100,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     } else {
       barcode = String(barcode).trim();
       if (!barcode)
-        return res
-          .status(400)
-          .json({ ok: false, msg: "Código de barras inválido" });
+        return sendJson(res, 400, { ok: false, msg: "Código de barras inválido" });
     }
 
     // 3️⃣ Conexión + Transacción
@@ -103,7 +114,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     );
     if (!sucRows.length) {
       await conn.rollback();
-      return res.status(404).json({ ok: false, msg: `Sucursal no encontrada: "${sucursal}"` });
+      return sendJson(res, 404, { ok: false, msg: `Sucursal no encontrada: "${sucursal}"` });
     }
     const sucursal_id = sucRows[0].id;
     const sucursal_nombre = sucRows[0].nombre;
@@ -123,10 +134,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       );
       if (!rows.length) {
         await conn.rollback();
-        return res.status(404).json({
-          ok: false,
-          msg: `Código de barras no encontrado: ${barcode}`,
-        });
+        return sendJson(res, 404, { ok: false, msg: `Código de barras no encontrado: ${barcode}` });
       }
       gusto_id = rows[0].gusto_id;
       producto_id = rows[0].producto_id;
@@ -186,10 +194,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
       if (!found) {
         await conn.rollback();
         const terminos = [modelo, serie, gusto].filter(Boolean).join(" / ");
-        return res.status(404).json({
-          ok: false,
-          msg: `Producto no encontrado: "${terminos}". Verificá el nombre o usá el código de barras.`,
-        });
+        return sendJson(res, 404, { ok: false, msg: `Producto no encontrado: "${terminos}". Verificá el nombre o usá el código de barras.` });
       }
 
       gusto_id = found.gusto_id;
@@ -214,10 +219,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     const stockDisponible = Number(saldo.stock_disponible) || 0;
     if (stockDisponible < cantidad) {
       await conn.rollback();
-      return res.status(400).json({
-        ok: false,
-        msg: `Stock insuficiente en la sucursal. Disponible: ${stockDisponible}`,
-      });
+      return sendJson(res, 400, { ok: false, msg: `Stock insuficiente en la sucursal. Disponible: ${stockDisponible}` });
     }
 
     // 🔹 Registrar venta (usa precio actual del último movimiento)
@@ -245,7 +247,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     await conn.commit();
 
     // ✅ Éxito
-    return res.json({
+    return sendJson(res, 200, {
       ok: true,
       msg: "Venta registrada correctamente",
       data: {
@@ -268,9 +270,7 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
         await conn.rollback();
       } catch {}
     console.error("❌ POST /public/registrar-venta error:", err.message);
-    return res
-      .status(500)
-      .json({ ok: false, msg: "Error interno del servidor" });
+    return sendJson(res, 500, { ok: false, msg: "Error interno del servidor" });
   } finally {
     if (conn) conn.release();
   }
