@@ -35,6 +35,7 @@ app.use("/admin/stock", require("./routes/adminStock.routes"));
 app.use("/", require("./routes/public.routes"));
 app.use("/clientes", require("./routes/clientes.routes"));
 app.use("/", require("./routes/cuentas.routes"));
+app.use("/mayorista", require("./routes/mayorista.routes"));
 
 
 
