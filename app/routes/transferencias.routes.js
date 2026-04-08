@@ -54,7 +54,8 @@ router.get("/:id", authenticate, soloAdmin, async (req, res) => {
     const [[t]] = await pool.promise().query(
       `SELECT t.*,
          so.nombre AS sucursal_origen,
-         sd.nombre AS sucursal_destino
+         sd.nombre AS sucursal_destino,
+         sd.telefono AS telefono_destino
        FROM transferencias_stock t
        JOIN sucursales so ON so.id = t.sucursal_origen_id
        JOIN sucursales sd ON sd.id = t.sucursal_destino_id

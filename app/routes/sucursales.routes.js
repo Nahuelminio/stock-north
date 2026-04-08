@@ -55,4 +55,22 @@ router.get("/:id", authenticate, async (req, res) => {
 });
 
 
+// PATCH /sucursales/:id — actualizar nombre y/o teléfono
+router.patch("/:id", authenticate, async (req, res) => {
+  const { nombre, telefono } = req.body;
+  if (req.user?.rol !== "admin")
+    return res.status(403).json({ error: "Solo administradores" });
+  try {
+    await pool.promise().query(
+      "UPDATE sucursales SET nombre = COALESCE(?, nombre), telefono = ? WHERE id = ?",
+      [nombre || null, telefono || null, req.params.id]
+    );
+    const [[s]] = await pool.promise().query("SELECT * FROM sucursales WHERE id = ?", [req.params.id]);
+    res.json(s);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error al actualizar sucursal" });
+  }
+});
+
 module.exports = router;
