@@ -347,13 +347,15 @@ router.get("/disponibles", authenticate, async (req, res) => {
 });
 
 // Todos los gustos con nombre de producto (para reposición sin filtro de sucursal)
+// Deduplica por (producto_id, nombre gusto) tomando el MIN(id) para evitar duplicados entre sucursales
 router.get("/gustos-todos", authenticate, async (req, res) => {
   try {
     const [results] = await pool.promise().query(
-      `SELECT g.id AS gusto_id, g.nombre AS gusto, g.codigo_barra,
+      `SELECT MIN(g.id) AS gusto_id, g.nombre AS gusto, g.codigo_barra,
               p.id AS producto_id, p.nombre AS producto_nombre
        FROM gustos g
        JOIN productos p ON p.id = g.producto_id
+       GROUP BY p.id, g.nombre
        ORDER BY p.nombre, g.nombre`
     );
     res.json(results);
