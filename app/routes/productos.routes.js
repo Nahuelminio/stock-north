@@ -351,11 +351,12 @@ router.get("/disponibles", authenticate, async (req, res) => {
 router.get("/gustos-todos", authenticate, async (req, res) => {
   try {
     const [results] = await pool.promise().query(
-      `SELECT MIN(g.id) AS gusto_id, g.nombre AS gusto, g.codigo_barra,
-              p.id AS producto_id, p.nombre AS producto_nombre
+      `SELECT MIN(g.id) AS gusto_id, g.nombre AS gusto,
+              MIN(g.codigo_barra) AS codigo_barra,
+              MIN(p.id) AS producto_id, p.nombre AS producto_nombre
        FROM gustos g
        JOIN productos p ON p.id = g.producto_id
-       GROUP BY p.id, g.nombre
+       GROUP BY p.nombre, g.nombre
        ORDER BY p.nombre, g.nombre`
     );
     res.json(results);

@@ -79,28 +79,40 @@ router.post("/", authenticate, soloAdmin, async (req, res) => {
   if (!sucursal_id || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: "Faltan datos: sucursal e ítems son obligatorios" });
   }
+  const conn = await pool.promise().getConnection();
   try {
-    const [[suc]] = await pool.promise().query("SELECT id FROM sucursales WHERE id = ?", [sucursal_id]);
-    if (!suc) return res.status(400).json({ error: "Sucursal no existe" });
+    await conn.beginTransaction();
 
-    const [result] = await pool.promise().query(
+    const [[suc]] = await conn.query("SELECT id FROM sucursales WHERE id = ?", [sucursal_id]);
+    if (!suc) { await conn.rollback(); return res.status(400).json({ error: "Sucursal no existe" }); }
+
+    const [result] = await conn.query(
       "INSERT INTO ordenes_reposicion (sucursal_id, notas) VALUES (?, ?)",
       [sucursal_id, notas || null]
     );
     const ordenId = result.insertId;
 
-    for (const item of items) {
-      if (!item.gusto_id || !item.cantidad || item.cantidad <= 0) continue;
-      await pool.promise().query(
+    const itemsValidos = items.filter((i) => i.gusto_id && i.cantidad > 0);
+    if (itemsValidos.length === 0) {
+      await conn.rollback();
+      return res.status(400).json({ error: "Ningún ítem válido" });
+    }
+
+    for (const item of itemsValidos) {
+      await conn.query(
         "INSERT INTO orden_reposicion_items (orden_id, gusto_id, cantidad) VALUES (?, ?, ?)",
         [ordenId, item.gusto_id, item.cantidad]
       );
     }
 
+    await conn.commit();
     res.json({ id: ordenId, mensaje: "Orden creada como pendiente" });
   } catch (e) {
+    await conn.rollback();
     console.error(e);
     res.status(500).json({ error: "Error al crear orden" });
+  } finally {
+    conn.release();
   }
 });
 
