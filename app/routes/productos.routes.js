@@ -346,6 +346,23 @@ router.get("/disponibles", authenticate, async (req, res) => {
   }
 });
 
+// Todos los gustos con nombre de producto (para reposición sin filtro de sucursal)
+router.get("/gustos-todos", authenticate, async (req, res) => {
+  try {
+    const [results] = await pool.promise().query(
+      `SELECT g.id AS gusto_id, g.nombre AS gusto, g.codigo_barra,
+              p.id AS producto_id, p.nombre AS producto_nombre
+       FROM gustos g
+       JOIN productos p ON p.id = g.producto_id
+       ORDER BY p.nombre, g.nombre`
+    );
+    res.json(results);
+  } catch (error) {
+    console.error("Error al obtener gustos:", error);
+    res.status(500).json({ error: "Error al obtener gustos" });
+  }
+});
+
 // 🔵 Valor del stock por sucursal (usa precio de stock)
 router.get("/valor-stock-por-sucursal", authenticate, async (req, res) => {
   const { rol, sucursalId } = req.user;

@@ -173,22 +173,20 @@ router.post("/:id/confirmar", authenticate, soloAdmin, async (req, res) => {
         });
       }
 
-      // Sumar en destino — upsert seguro (no asume unique constraint)
-      const [[existe]] = await conn.query(
-        "SELECT id FROM stock WHERE gusto_id = ? AND sucursal_id = ?",
-        [item.gusto_id, t.sucursal_destino_id]
+      // Tomar el precio del stock de origen para usarlo si hay que crear la fila en destino
+      const [[stockOrigen]] = await conn.query(
+        "SELECT precio FROM stock WHERE gusto_id = ? AND sucursal_id = ?",
+        [item.gusto_id, t.sucursal_origen_id]
       );
-      if (existe) {
-        await conn.query(
-          "UPDATE stock SET cantidad = cantidad + ? WHERE gusto_id = ? AND sucursal_id = ?",
-          [item.cantidad, item.gusto_id, t.sucursal_destino_id]
-        );
-      } else {
-        await conn.query(
-          "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, 0)",
-          [item.gusto_id, t.sucursal_destino_id, item.cantidad]
-        );
-      }
+      const precioOrigen = stockOrigen?.precio ?? 0;
+
+      // Sumar en destino — upsert atómico (requiere UNIQUE KEY (gusto_id, sucursal_id) en stock)
+      await conn.query(
+        `INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE cantidad = cantidad + VALUES(cantidad)`,
+        [item.gusto_id, t.sucursal_destino_id, item.cantidad, precioOrigen]
+      );
     }
 
     await conn.query(
