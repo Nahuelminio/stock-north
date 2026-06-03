@@ -1,3 +1,4 @@
+require("dotenv").config({ path: require("path").join(__dirname, "../.env") });
 const express = require("express");
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5,15 +6,25 @@ const PORT = process.env.PORT || 3000;
 const cors = require("cors");
 
 // 🔐 Configuración de CORS
+const ALLOWED_ORIGINS = [
+  "https://socknorth.net",
+  "https://chocolate-donkey-945086.hostingersite.com",
+  process.env.CATALOG_NORTH_URL, // dominio producción del catálogo North
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "https://socknorth.net",
-      "http://localhost:3001",
-      "http://192.168.0.13:3001",
-      "https://chocolate-donkey-945086.hostingersite.com",
-    ], // ✅ agregá tu dominio de producción
+    origin: (origin, callback) => {
+      // Sin origin (curl, Postman, apps móviles) → permitir
+      if (!origin) return callback(null, true);
+      // Cualquier localhost en cualquier puerto → permitir en desarrollo
+      if (/^http:\/\/localhost(:\d+)?$/.test(origin)) return callback(null, true);
+      // Red local 192.168.x.x
+      if (/^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/.test(origin)) return callback(null, true);
+      // Dominios de producción autorizados
+      if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+      callback(new Error(`CORS: origen no permitido: ${origin}`));
+    },
     credentials: true,
   })
 );
@@ -38,6 +49,8 @@ app.use("/", require("./routes/cuentas.routes"));
 app.use("/mayorista", require("./routes/mayorista.routes"));
 app.use("/transferencias", require("./routes/transferencias.routes"));
 app.use("/ordenes-reposicion", require("./routes/ordenesReposicion.routes"));
+app.use("/vendedores", require("./routes/vendedores.routes"));
+app.use("/", require("./routes/pedidosCentral.routes"));
 
 
 
