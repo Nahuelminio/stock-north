@@ -8,8 +8,8 @@ const pool = require("../db");
 // GET /sucursales-publico  -> [{id, nombre}]
 
 
-// GET /sucursales
-router.get("/", async (req, res) => {
+// GET /sucursales — requiere autenticación
+router.get("/", authenticate, async (req, res) => {
   try {
     const [results] = await pool.promise().query("SELECT * FROM sucursales");
     res.json(results);
@@ -19,8 +19,11 @@ router.get("/", async (req, res) => {
   }
 });
 
-// POST /sucursales
-router.post("/", async (req, res) => {
+// POST /sucursales — solo admin
+router.post("/", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") {
+    return res.status(403).json({ error: "Acceso denegado: solo administradores" });
+  }
   const { nombre } = req.body;
   if (!nombre) {
     return res.status(400).json({ error: "Falta el nombre de la sucursal" });

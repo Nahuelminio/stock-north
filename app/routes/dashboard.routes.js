@@ -1,9 +1,15 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../db");
+const authenticate = require("../middlewares/authenticate");
+
+const soloAdmin = (req, res, next) => {
+  if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo administradores" });
+  next();
+};
 
 // Datos para el dashboard principal
-router.get("/dashboard", async (req, res) => {
+router.get("/dashboard", authenticate, soloAdmin, async (req, res) => {
   try {
     const [[stockTotal]] = await pool
       .promise()
@@ -14,9 +20,9 @@ router.get("/dashboard", async (req, res) => {
       .query("SELECT COUNT(*) as bajos FROM stock WHERE cantidad <= 5");
 
     const [porSucursal] = await pool.promise().query(
-      `SELECT s.nombre, COUNT(*) as productos 
-       FROM stock st 
-       JOIN sucursales s ON st.sucursal_id = s.id 
+      `SELECT s.nombre, COUNT(*) as productos
+       FROM stock st
+       JOIN sucursales s ON st.sucursal_id = s.id
        GROUP BY s.nombre`
     );
 
@@ -31,10 +37,11 @@ router.get("/dashboard", async (req, res) => {
     res.status(500).json({ error: "Error al obtener dashboard" });
   }
 });
-router.get("/resumen-ganancias", async (req, res) => {
+
+router.get("/resumen-ganancias", authenticate, soloAdmin, async (req, res) => {
   try {
     const [rows] = await pool.promise().query(`
-    SELECT 
+    SELECT
     s.nombre AS sucursal,
     SUM(v.cantidad * st.precio) AS total_ventas,
     SUM(v.cantidad * p.precio_costo) AS costo_total,
@@ -45,7 +52,6 @@ JOIN gustos g ON v.gusto_id = g.id
 JOIN productos p ON g.producto_id = p.id
 JOIN stock st ON v.gusto_id = st.gusto_id AND v.sucursal_id = st.sucursal_id
 GROUP BY s.id;
-
     `);
 
     res.json(rows);
@@ -54,7 +60,8 @@ GROUP BY s.id;
     res.status(500).json({ error: "Error al obtener resumen de ganancias" });
   }
 });
-router.get("/resumen-ganancias-mensual", async (req, res) => {
+
+router.get("/resumen-ganancias-mensual", authenticate, soloAdmin, async (req, res) => {
   const { mes, anio } = req.query;
 
   if (!mes || !anio) {
@@ -64,7 +71,7 @@ router.get("/resumen-ganancias-mensual", async (req, res) => {
   try {
     const [rows] = await pool.promise().query(
       `
-      SELECT 
+      SELECT
         s.nombre AS sucursal,
         SUM(v.cantidad * st.precio) AS total_ventas,
         SUM(v.cantidad * p.precio_costo) AS costo_total,
@@ -83,12 +90,11 @@ router.get("/resumen-ganancias-mensual", async (req, res) => {
     res.json(rows);
   } catch (error) {
     console.error("❌ Error al obtener resumen mensual:", error);
-    res
-      .status(500)
-      .json({ error: "Error al obtener resumen mensual de ganancias" });
+    res.status(500).json({ error: "Error al obtener resumen mensual de ganancias" });
   }
 });
-router.get("/ranking-productos-sucursal", async (req, res) => {
+
+router.get("/ranking-productos-sucursal", authenticate, soloAdmin, async (req, res) => {
   const { mes, anio } = req.query;
 
   if (!mes || !anio) {
@@ -98,7 +104,7 @@ router.get("/ranking-productos-sucursal", async (req, res) => {
   try {
     const [rows] = await pool.promise().query(
       `
-      SELECT 
+      SELECT
         s.nombre AS sucursal,
         p.nombre AS producto_nombre,
         g.nombre AS gusto,
@@ -120,7 +126,5 @@ router.get("/ranking-productos-sucursal", async (req, res) => {
     res.status(500).json({ error: "Error al obtener el ranking" });
   }
 });
-
-
 
 module.exports = router;

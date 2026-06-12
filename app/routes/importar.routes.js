@@ -4,11 +4,16 @@ const pool = require("../db");
 const multer = require("multer");
 const xlsx = require("xlsx");
 const fs = require("fs");
+const authenticate = require("../middlewares/authenticate");
 
 const upload = multer({ dest: "uploads/" });
 
-// 📥 Importar productos desde Excel
-router.post("/importar-excel", upload.single("archivo"), async (req, res) => {
+// 📥 Importar productos desde Excel — solo admin
+router.post("/importar-excel", authenticate, upload.single("archivo"), async (req, res) => {
+  if (req.user?.rol !== "admin") {
+    if (req.file) fs.unlinkSync(req.file.path);
+    return res.status(403).json({ error: "Acceso denegado" });
+  }
   try {
     const archivo = req.file;
     if (!archivo) {
@@ -61,19 +66,41 @@ router.post("/importar-excel", upload.single("archivo"), async (req, res) => {
             ]);
         }
 
-        const [gustoInsert] = await pool
+        // Buscar gusto existente para evitar duplicados
+        const [[gustoExistente]] = await pool
           .promise()
           .query(
-            "INSERT INTO gustos (producto_id, nombre, codigo_barra) VALUES (?, ?, ?)",
-            [producto_id, gusto, codigo_barra]
+            "SELECT id FROM gustos WHERE producto_id = ? AND nombre = ? LIMIT 1",
+            [producto_id, gusto]
           );
 
-        await pool
-          .promise()
-          .query(
-            "INSERT INTO stock (gusto_id, sucursal_id, cantidad) VALUES (?, ?, ?)",
-            [gustoInsert.insertId, sucursal_id, stock]
-          );
+        let gusto_id;
+        if (gustoExistente) {
+          gusto_id = gustoExistente.id;
+          // Actualizar código de barras si se proporcionó
+          if (codigo_barra) {
+            await pool.promise().query(
+              "UPDATE gustos SET codigo_barra = ? WHERE id = ?",
+              [codigo_barra, gusto_id]
+            );
+          }
+        } else {
+          const [gustoInsert] = await pool
+            .promise()
+            .query(
+              "INSERT INTO gustos (producto_id, nombre, codigo_barra) VALUES (?, ?, ?)",
+              [producto_id, gusto, codigo_barra]
+            );
+          gusto_id = gustoInsert.insertId;
+        }
+
+        // Upsert de stock: si ya existe suma, si no crea
+        await pool.promise().query(
+          `INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE cantidad = cantidad + VALUES(cantidad), precio = VALUES(precio)`,
+          [gusto_id, sucursal_id, stock, precio]
+        );
 
         insertados.push(fila);
       } catch (err) {
@@ -90,8 +117,11 @@ router.post("/importar-excel", upload.single("archivo"), async (req, res) => {
   }
 });
 
-// 📤 Exportar productos a Excel
-router.get("/exportar-excel", async (req, res) => {
+// 📤 Exportar productos a Excel — solo admin
+router.get("/exportar-excel", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") {
+    return res.status(403).json({ error: "Acceso denegado" });
+  }
   try {
     const [productos] = await pool.promise().query(`
       SELECT 

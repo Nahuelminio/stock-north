@@ -2,14 +2,23 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pool = require("../db");
+const authenticate = require("../middlewares/authenticate");
 
 const router = express.Router();
 
-// ✅ Registro de usuario
-router.post("/register", async (req, res) => {
+// ✅ Registro de usuario — solo admin puede crear usuarios
+router.post("/register", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") {
+    return res.status(403).json({ error: "Acceso denegado: solo administradores pueden crear usuarios" });
+  }
+
   const { email, password, sucursal_id, rol } = req.body;
 
-  if (!email || !password || (!sucursal_id && rol !== "admin")) {
+  // rol solo puede ser uno de los valores válidos; nunca viene del exterior sin validar
+  const roles_validos = ["admin", "sucursal", "vendedor"];
+  const rolFinal = roles_validos.includes(rol) ? rol : "sucursal";
+
+  if (!email || !password || (!sucursal_id && rolFinal !== "admin")) {
     return res.status(400).json({ error: "Faltan datos" });
   }
 
@@ -20,7 +29,7 @@ router.post("/register", async (req, res) => {
       .promise()
       .query(
         "INSERT INTO usuarios (email, password_hash, sucursal_id, rol) VALUES (?, ?, ?, ?)",
-        [email, hashedPassword, sucursal_id || null, rol || "sucursal"]
+        [email, hashedPassword, sucursal_id || null, rolFinal]
       );
 
     res.json({ mensaje: "✅ Usuario registrado" });
@@ -39,25 +48,17 @@ router.post("/login", async (req, res) => {
   }
 
   try {
-    console.log("🟡 Buscando usuario:", email);
     const [rows] = await pool
       .promise()
       .query("SELECT * FROM usuarios WHERE email = ?", [email]);
 
-    console.log("🟢 Resultado query:", rows);
-
     const user = rows[0];
     if (!user) {
-      console.log("🔴 Usuario no encontrado");
       return res.status(401).json({ error: "Usuario no encontrado" });
     }
 
-    console.log("🟡 Comparando password...");
     const validPassword = await bcrypt.compare(password, user.password_hash);
-    console.log("🟢 Resultado bcrypt:", validPassword);
-
     if (!validPassword) {
-      console.log("🔴 Contraseña incorrecta");
       return res.status(401).json({ error: "Contraseña incorrecta" });
     }
 
@@ -78,8 +79,6 @@ router.post("/login", async (req, res) => {
       jwtSecret,
       { expiresIn: "8h" }
     );
-
-    console.log("✅ Login exitoso, generando token");
 
     res.json({ token });
   } catch (error) {

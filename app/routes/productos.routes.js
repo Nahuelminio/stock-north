@@ -28,7 +28,7 @@ router.get("/", authenticate, async (req, res) => {
     `;
 
     const params = [];
-    if (rol !== "admin") {
+    if (rol !== "admin" && rol !== "vendedor") {
       query += " WHERE s.id = ?";
       params.push(sucursalId);
     }
@@ -164,15 +164,6 @@ router.post(
     const nuevoGusto =
       nuevoGustoRaw !== null ? String(nuevoGustoRaw).trim() : null;
 
-    console.log("📥 Body:", req.body);
-    console.log("✅ Normalizado:", {
-      gusto_id,
-      sucursal_id,
-      nuevoGusto,
-      stock,
-      precio,
-      codigo_barra,
-    });
 
     // ¿Qué se quiere actualizar?
     const quiereActualizarGusto =
@@ -201,16 +192,20 @@ router.post(
       return res.status(400).json({ error: "El gusto no puede estar vacío." });
     }
 
+    const conn = await pool.promise().getConnection();
     try {
+      await conn.beginTransaction();
+
       // 🔎 Validar código de barras SOLO por sucursal (no global)
       if (codigo_barra !== undefined) {
         if (!sucursal_id) {
+          await conn.rollback();
+          conn.release();
           return res.status(400).json({
-            error:
-              "Para actualizar el código de barras se requiere sucursal_id.",
+            error: "Para actualizar el código de barras se requiere sucursal_id.",
           });
         }
-        const [dupeSucursal] = await pool.promise().query(
+        const [dupeSucursal] = await conn.query(
           `SELECT g.id
            FROM gustos g
            JOIN stock st ON st.gusto_id = g.id
@@ -220,6 +215,8 @@ router.post(
           [codigo_barra, sucursal_id, gusto_id]
         );
         if (codigo_barra && dupeSucursal.length > 0) {
+          await conn.rollback();
+          conn.release();
           return res.status(400).json({
             error: "Este código de barras ya existe en esta sucursal.",
           });
@@ -241,9 +238,7 @@ router.post(
 
         if (sets.length) {
           params.push(gusto_id);
-          await pool
-            .promise()
-            .query(`UPDATE gustos SET ${sets.join(", ")} WHERE id = ?`, params);
+          await conn.query(`UPDATE gustos SET ${sets.join(", ")} WHERE id = ?`, params);
         }
       }
 
@@ -261,28 +256,22 @@ router.post(
         }
         params.push(gusto_id, sucursal_id);
 
-        const [upd] = await pool
-          .promise()
-          .query(
-            `UPDATE stock SET ${sets.join(
-              ", "
-            )} WHERE gusto_id = ? AND sucursal_id = ?`,
-            params
-          );
+        const [upd] = await conn.query(
+          `UPDATE stock SET ${sets.join(", ")} WHERE gusto_id = ? AND sucursal_id = ?`,
+          params
+        );
 
         if (upd.affectedRows === 0) {
-          // Si no existe la fila de stock para ese gusto en esa sucursal, podés crearla automáticamente:
-          // await pool.promise().query(
-          //   "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
-          //   [gusto_id, sucursal_id, stock ?? 0, precio ?? 0]
-          // );
-          return res
-            .status(404)
-            .json({ error: "No existe stock para ese gusto en esa sucursal." });
+          await conn.rollback();
+          conn.release();
+          return res.status(404).json({ error: "No existe stock para ese gusto en esa sucursal." });
         }
       }
 
-      // (Opcional) devolver el registro actualizado
+      await conn.commit();
+      conn.release();
+
+      // Devolver el registro actualizado
       const [result] = await pool.promise().query(
         `SELECT 
          p.id AS producto_id,
@@ -309,6 +298,8 @@ router.post(
         data: result?.[0] ?? null,
       });
     } catch (error) {
+      try { await conn.rollback(); } catch (_) {}
+      conn.release();
       console.error("❌ Error al editar producto:", error.message, error.stack);
       res.status(500).json({ error: "Error al editar producto" });
     }

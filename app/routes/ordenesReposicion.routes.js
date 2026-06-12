@@ -10,8 +10,10 @@ const soloAdmin = (req, res, next) => {
 
 // GET /ordenes-reposicion — lista paginada
 router.get("/", authenticate, soloAdmin, async (req, res) => {
-  const { page = 1, limit = 30, estado } = req.query;
-  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const page  = Math.max(1, parseInt(req.query.page)  || 1);
+  const limit = Math.min(500, Math.max(1, parseInt(req.query.limit) || 30));
+  const { estado } = req.query;
+  const offset = (page - 1) * limit;
   try {
     const whereEstado = estado ? "WHERE o.estado = ?" : "";
     const params = estado ? [estado] : [];
@@ -54,10 +56,11 @@ router.get("/:id", authenticate, soloAdmin, async (req, res) => {
     if (!orden) return res.status(404).json({ error: "Orden no encontrada" });
 
     const [items] = await pool.promise().query(
-      `SELECT i.id, i.gusto_id, i.cantidad,
+      `SELECT i.id, i.gusto_id, i.cantidad, i.precio_costo,
               g.nombre AS gusto,
               p.nombre AS producto_nombre,
-              COALESCE(st.cantidad, 0) AS stock_actual
+              COALESCE(st.cantidad, 0) AS stock_actual,
+              st.precio AS precio_venta
        FROM orden_reposicion_items i
        JOIN gustos g ON g.id = i.gusto_id
        JOIN productos p ON p.id = g.producto_id
@@ -99,9 +102,18 @@ router.post("/", authenticate, soloAdmin, async (req, res) => {
     }
 
     for (const item of itemsValidos) {
+      let precioCosto = null;
+      if (item.precio_costo != null && item.precio_costo !== "") {
+        const pc = Number(item.precio_costo);
+        if (!Number.isFinite(pc) || pc < 0) {
+          await conn.rollback();
+          return res.status(400).json({ error: `Precio de costo inválido para gusto_id ${item.gusto_id}` });
+        }
+        precioCosto = pc;
+      }
       await conn.query(
-        "INSERT INTO orden_reposicion_items (orden_id, gusto_id, cantidad) VALUES (?, ?, ?)",
-        [ordenId, item.gusto_id, item.cantidad]
+        "INSERT INTO orden_reposicion_items (orden_id, gusto_id, cantidad, precio_costo) VALUES (?, ?, ?, ?)",
+        [ordenId, item.gusto_id, item.cantidad, precioCosto]
       );
     }
 
@@ -149,10 +161,10 @@ router.post("/:id/confirmar", authenticate, soloAdmin, async (req, res) => {
         [item.gusto_id, orden.sucursal_id, item.cantidad, precio]
       );
 
-      // Registrar en historial de reposiciones
+      // Registrar en historial de reposiciones (con precio_costo si existe)
       await conn.query(
-        "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, fecha) VALUES (?, ?, ?, NOW())",
-        [item.gusto_id, orden.sucursal_id, item.cantidad]
+        "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, precio_costo, fecha) VALUES (?, ?, ?, ?, NOW())",
+        [item.gusto_id, orden.sucursal_id, item.cantidad, item.precio_costo ?? null]
       );
     }
 

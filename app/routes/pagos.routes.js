@@ -235,37 +235,66 @@ router.get("/resumen-pagos", authenticate, async (req, res) => {
 // 🔵 Resumen financiero por sucursal (sucursal logueada)
 // 🔵 Resumen financiero por sucursal (sucursal logueada)
 router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
-  const { sucursalId } = req.user;
-  try {
-    const [resultado] = await pool.promise().query(
-      `
-      SELECT 
-        s.id AS sucursal_id, 
-        s.nombre AS sucursal,
-        COALESCE(f.total_facturado, 0) AS total_facturado,
-        COALESCE(p.total_pagado, 0) AS total_pagado,
-        (COALESCE(f.total_facturado, 0) - COALESCE(p.total_pagado, 0)) AS deuda
-      FROM sucursales s
-      LEFT JOIN (
-        SELECT v.sucursal_id, SUM(v.cantidad * v.precio_unitario) AS total_facturado
-        FROM ventas v
-        WHERE v.sucursal_id = ?
-        GROUP BY v.sucursal_id
-      ) f ON s.id = f.sucursal_id
-      LEFT JOIN (
-        SELECT sucursal_id, SUM(monto) AS total_pagado
-        FROM pagos
-        WHERE sucursal_id = ? AND estado = 'ok'
-        GROUP BY sucursal_id
-      ) p ON s.id = p.sucursal_id
-      WHERE s.id = ?
-      `,
-      [sucursalId, sucursalId, sucursalId]
-    );
+  const { id: userId, rol, sucursalId } = req.user;
+  const esVendedor = rol === "vendedor";
 
-    if (!resultado.length)
-      return res.status(404).json({ error: "Sucursal no encontrada" });
-    res.json(resultado[0]);
+  try {
+    let totalFacturado = 0;
+    let totalPagado    = 0;
+    let nombreLabel    = "—";
+
+    if (esVendedor) {
+      // Vendedores: facturado por vendedor_id (puede haber vendido desde varias sucursales)
+      const [[fila]] = await pool.promise().query(
+        `SELECT COALESCE(SUM(v.cantidad * v.precio_unitario), 0) AS total_facturado
+         FROM ventas v WHERE v.vendedor_id = ?`,
+        [userId]
+      );
+      totalFacturado = Number(fila.total_facturado);
+
+      // Pagos: por vendedor_id (nuevo modelo)
+      const [[pagFila]] = await pool.promise().query(
+        `SELECT COALESCE(SUM(monto), 0) AS total_pagado
+         FROM pagos WHERE vendedor_id = ? AND estado = 'ok'`,
+        [userId]
+      );
+      totalPagado = Number(pagFila.total_pagado);
+    } else {
+      // Sucursales: comportamiento original
+      if (!sucursalId)
+        return res.status(400).json({ error: "Sin sucursal asignada" });
+
+      const [[fila]] = await pool.promise().query(
+        `SELECT
+           s.nombre AS sucursal,
+           COALESCE(f.total_facturado, 0) AS total_facturado,
+           COALESCE(p.total_pagado, 0)    AS total_pagado
+         FROM sucursales s
+         LEFT JOIN (
+           SELECT sucursal_id, SUM(cantidad * precio_unitario) AS total_facturado
+           FROM ventas WHERE sucursal_id = ? GROUP BY sucursal_id
+         ) f ON s.id = f.sucursal_id
+         LEFT JOIN (
+           SELECT sucursal_id, SUM(monto) AS total_pagado
+           FROM pagos WHERE sucursal_id = ? AND estado = 'ok' GROUP BY sucursal_id
+         ) p ON s.id = p.sucursal_id
+         WHERE s.id = ?`,
+        [sucursalId, sucursalId, sucursalId]
+      );
+      if (!fila) return res.status(404).json({ error: "Sucursal no encontrada" });
+
+      return res.json({
+        sucursal: fila.sucursal,
+        total_facturado: Number(fila.total_facturado),
+        total_pagado:    Number(fila.total_pagado),
+      });
+    }
+
+    res.json({
+      sucursal:         nombreLabel,
+      total_facturado:  totalFacturado,
+      total_pagado:     totalPagado,
+    });
   } catch (error) {
     console.error("❌ Error al obtener resumen financiero de sucursal:", error);
     res.status(500).json({ error: "Error al obtener resumen financiero" });
@@ -328,6 +357,7 @@ router.post("/pagos/ingresar-ocr", authenticate, async (req, res) => {
     );
     if (dup.length) {
       const pago_id = dup[0].id;
+      // No llamamos conn.release() aquí — lo hace el finally
       await conn.query(
         "INSERT INTO pagos_raw_ocr (pago_id, ocr_text, ocr_confianza, parser_json, imagen_url) VALUES (?,?,?,?,?)",
         [
@@ -338,7 +368,6 @@ router.post("/pagos/ingresar-ocr", authenticate, async (req, res) => {
           imagen_url || null,
         ]
       );
-      conn.release();
       return res.json({ status: "duplicado", pago_id });
     }
 
@@ -373,19 +402,17 @@ router.post("/pagos/ingresar-ocr", authenticate, async (req, res) => {
     );
 
     await conn.commit();
-    conn.release();
 
     return res.json({
       status: estado === "ok" ? "insertado" : "needs_review",
       pago_id,
     });
   } catch (error) {
-    try {
-      await conn.rollback();
-    } catch (_) {}
-    conn.release();
+    try { await conn.rollback(); } catch (_) {}
     console.error("❌ Error en /pagos/ingresar-ocr:", error);
     res.status(500).json({ error: "Error al registrar pago via OCR" });
+  } finally {
+    conn.release();
   }
 });
 

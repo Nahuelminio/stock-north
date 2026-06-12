@@ -13,7 +13,7 @@ router.put("/:id", controller.editarCliente);
 router.delete("/:id", controller.eliminarCliente);
 
 // Proxy a n8n para evitar CORS desde el frontend
-const N8N_WEBHOOK = "https://nahuelminio04.app.n8n.cloud/webhook/f26edb4e-41a0-4252-a06b-b352fd6fb56f";
+const N8N_WEBHOOK = process.env.N8N_WEBHOOK_CLIENTES || "https://nahuelmino04.app.n8n.cloud/webhook/f26edb4e-41a0-4252-a06b-b352fd6fb56f";
 
 router.post("/proxy-mensaje", authenticate, async (req, res) => {
   try {

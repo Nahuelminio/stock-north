@@ -3,8 +3,7 @@ const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
 
-const N8N_WEBHOOK_URL =
-  "https://nahuelminio04.app.n8n.cloud/webhook/87cb3b26-fadf-43a8-950c-2b181ca9420d";
+const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_VENTAS || "";
 
 
 // Si tu Node no tiene fetch nativo (Node < 18), descomentá esto:
@@ -12,31 +11,40 @@ const N8N_WEBHOOK_URL =
 //   import("node-fetch").then(({ default: f }) => f(...args));
 
 router.post("/vender", authenticate, async (req, res) => {
-  const { rol, sucursalId: sucursalIdDesdeToken } = req.user;
+  const { rol, id: userId, sucursalId: sucursalIdDesdeToken } = req.user;
 
-  // Coerciones seguras
-  const gustoId = Number(req.body.gusto_id);
-  const cantidad = Number(req.body.cantidad);
+  const gustoId      = Number(req.body.gusto_id);
+  const cantidad     = Number(req.body.cantidad);
   const sucursalIdBody = Number(req.body.sucursal_id);
-  const sucursalIdFinal =
-    rol === "admin" ? sucursalIdBody : Number(sucursalIdDesdeToken);
+  const precioCustom = req.body.precio_unitario != null && req.body.precio_unitario !== ""
+    ? Number(req.body.precio_unitario) : null;
 
-  // Validaciones de entrada
-  if (!Number.isInteger(gustoId) || gustoId <= 0) {
+  const esVendedor = rol === "vendedor";
+
+  // sucursalIdFinal: sucursal donde ocurre la venta / se descuenta el stock
+  // - admin:    usa lo que manda en body
+  // - vendedor: usa lo que manda en body (puede vender desde cualquier sucursal)
+  // - sucursal: bloqueado a su propia sucursal del token
+  const sucursalIdFinal = (rol === "admin" || esVendedor)
+    ? sucursalIdBody
+    : Number(sucursalIdDesdeToken);
+
+  // vendedor_id: identifica quién vendió (solo para vendedores)
+  const vendedorId = esVendedor ? userId : null;
+
+  // Validaciones
+  if (!Number.isInteger(gustoId) || gustoId <= 0)
     return res.status(400).json({ error: "gusto_id inválido" });
-  }
-  if (!Number.isInteger(cantidad) || cantidad <= 0) {
+  if (!Number.isInteger(cantidad) || cantidad <= 0)
     return res.status(400).json({ error: "Cantidad inválida" });
-  }
-  if (!Number.isInteger(sucursalIdFinal) || sucursalIdFinal <= 0) {
+  if (!Number.isInteger(sucursalIdFinal) || sucursalIdFinal <= 0)
     return res.status(400).json({ error: "sucursal_id inválido" });
-  }
 
   const conn = await pool.promise().getConnection();
   try {
     await conn.beginTransaction();
 
-    // Leemos y bloqueamos la fila de stock (snapshot de precio y cantidad)
+    // Leer y bloquear stock
     const [rows] = await conn.query(
       "SELECT cantidad, precio FROM stock WHERE gusto_id = ? AND sucursal_id = ? FOR UPDATE",
       [gustoId, sucursalIdFinal]
@@ -58,71 +66,56 @@ router.post("/vender", authenticate, async (req, res) => {
       [cantidad, gustoId, sucursalIdFinal]
     );
 
-    // Registrar venta con precio_unitario (precio en el momento)
+    const precioFinal = (precioCustom != null && !isNaN(precioCustom) && precioCustom >= 0)
+      ? precioCustom : stockRow.precio;
+
     const [ins] = await conn.query(
-      `INSERT INTO ventas (gusto_id, sucursal_id, cantidad, precio_unitario, fecha)
-       VALUES (?, ?, ?, ?, NOW())`,
-      [gustoId, sucursalIdFinal, cantidad, stockRow.precio]
+      `INSERT INTO ventas (gusto_id, sucursal_id, sucursal_stock_id, vendedor_id, cantidad, precio_unitario, fecha)
+       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+      [gustoId, sucursalIdFinal, sucursalIdFinal, vendedorId, cantidad, precioFinal]
     );
 
     await conn.commit();
 
-    // 🔹 NUEVO: obtener nombres para mandar a n8n (NO afecta a la venta)
-    let info = {};
-    try {
-      const [rowsInfo] = await conn.query(
-        `
-        SELECT 
-          g.nombre AS gusto_nombre,
-          p.nombre AS modelo_nombre,
-          s.nombre AS sucursal_nombre
-        FROM ventas v
-        JOIN gustos g      ON v.gusto_id = g.id
-        JOIN productos p   ON g.producto_id = p.id
-        JOIN sucursales s  ON v.sucursal_id = s.id
-        WHERE v.id = ?
-        `,
-        [ins.insertId]
-      );
-      info = rowsInfo?.[0] || {};
-    } catch (e) {
-      console.error("Error obteniendo info para n8n:", e.message || e);
-    }
-
-    // 🔹 NUEVO: armar payload para n8n
-    const payload = {
-      venta_id: ins.insertId,
-      gusto_id: gustoId,
-      sucursal_id: sucursalIdFinal,
-      cantidad,
-      precio_unitario: stockRow.precio,
-      fecha_iso: new Date().toISOString(),
-
-      modelo_nombre: info?.modelo_nombre || null,
-      gusto_nombre: info?.gusto_nombre || null,
-      sucursal_nombre: info?.sucursal_nombre || null,
-    };
-
-    // 🔹 NUEVO: enviar a n8n (fire-and-forget)
-    (async () => {
-      if (!N8N_WEBHOOK_URL) return;
-      try {
-        await fetch(N8N_WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      } catch (err) {
-        console.error("Error enviando venta a n8n:", err.message || err);
-      }
-    })();
-
-    // 🔙 Respuesta al frontend: IGUAL que antes
-    return res.json({
+    // Responder al frontend inmediatamente — n8n va aparte
+    res.json({
       mensaje: "✅ Venta registrada",
       venta_id: ins.insertId,
-      precio_unitario: stockRow.precio,
+      precio_unitario: precioFinal,
     });
+
+    // Fire-and-forget a n8n — usa pool (conn ya fue liberada en finally)
+    if (N8N_WEBHOOK_URL) {
+      pool.promise().query(
+        `SELECT g.nombre AS gusto_nombre, p.nombre AS modelo_nombre, s.nombre AS sucursal_nombre
+         FROM ventas v
+         JOIN gustos g    ON v.gusto_id = g.id
+         JOIN productos p ON g.producto_id = p.id
+         JOIN sucursales s ON v.sucursal_id = s.id
+         WHERE v.id = ?`,
+        [ins.insertId]
+      ).then(([rows]) => {
+        const info = rows?.[0] || {};
+        return fetch(N8N_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            venta_id: ins.insertId,
+            gusto_id: gustoId,
+            sucursal_id: sucursalIdFinal,
+            vendedor_id: vendedorId,
+            cantidad,
+            precio_unitario: precioFinal,
+            fecha_iso: new Date().toISOString(),
+            modelo_nombre: info.modelo_nombre || null,
+            gusto_nombre: info.gusto_nombre || null,
+            sucursal_nombre: info.sucursal_nombre || null,
+          }),
+        });
+      }).catch((err) => {
+        console.error("n8n ventas error:", err.message || err);
+      });
+    }
   } catch (e) {
     await conn.rollback();
     console.error("❌ Error al registrar venta:", e.code || e.message, e);
@@ -349,43 +342,8 @@ router.get("/historial", authenticate, async (req, res) => {
   }
 });
 
-router.get("/ventas-mensuales", authenticate, async (req, res) => {
-  const { mes, anio } = req.query;
-  const { sucursalId, rol } = req.user;
-
-  if (!mes || !anio)
-    return res.status(400).json({ error: "Faltan parámetros mes y año" });
-
-  try {
-    let sql = `
-      SELECT 
-        s.id AS sucursal_id,
-        s.nombre AS sucursal,
-        SUM(v.cantidad) AS total_ventas,
-        SUM(v.cantidad * COALESCE(v.precio_unitario, st.precio, 0)) AS total_facturado
-      FROM ventas v
-      JOIN sucursales s ON v.sucursal_id = s.id
-      LEFT JOIN stock st ON st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id
-      WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?
-    `;
-    const params = [Number(mes), Number(anio)];
-
-    if (rol !== "admin") {
-      sql += " AND v.sucursal_id = ?";
-      params.push(Number(sucursalId));
-    }
-
-    sql += " GROUP BY s.id, s.nombre ORDER BY s.nombre";
-    const [rows] = await pool.promise().query(sql, params);
-    res.json(rows);
-  } catch (e) {
-    console.error("❌ Error ventas mensuales:", e);
-    res.status(500).json({ error: "Error al obtener ventas mensuales" });
-  }
-});
-
 // 🔵 Ventas mensuales por sucursal (solo admin)
-router.get("/buscar-por-codigo/:codigo", async (req, res) => {
+router.get("/buscar-por-codigo/:codigo", authenticate, async (req, res) => {
   const { codigo } = req.params;
   const { sucursal_id } = req.query;
 
@@ -395,11 +353,12 @@ router.get("/buscar-por-codigo/:codigo", async (req, res) => {
 
   try {
     const [result] = await pool.promise().query(
-      `SELECT 
+      `SELECT
         p.nombre AS producto_nombre,
         g.nombre AS gusto,
         g.id AS gusto_id,
-        g.codigo_barra
+        g.codigo_barra,
+        st.precio AS precio
       FROM gustos g
       JOIN productos p ON g.producto_id = p.id
       JOIN stock st ON st.gusto_id = g.id
