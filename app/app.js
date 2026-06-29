@@ -51,6 +51,7 @@ app.use("/transferencias", require("./routes/transferencias.routes"));
 app.use("/ordenes-reposicion", require("./routes/ordenesReposicion.routes"));
 app.use("/vendedores", require("./routes/vendedores.routes"));
 app.use("/", require("./routes/pedidosCentral.routes"));
+app.use("/", require("./routes/shisha.routes"));
 
 
 
