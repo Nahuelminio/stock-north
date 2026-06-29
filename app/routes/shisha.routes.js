@@ -22,7 +22,7 @@ router.put("/shisha/config", authenticate, async (req, res) => {
   res.json({ ok: true });
 });
 
-// PUT cargar insumos generales (carbones y papeles)
+// PUT cargar insumos generales
 router.put("/shisha/insumos", authenticate, async (req, res) => {
   const { carbones, papeles } = req.body;
   await pool.promise().query(
@@ -35,13 +35,11 @@ router.put("/shisha/insumos", authenticate, async (req, res) => {
 
 // ── SABORES ──
 
-// GET todos los sabores
 router.get("/shisha/sabores", authenticate, async (req, res) => {
   const [rows] = await pool.promise().query("SELECT * FROM shisha_sabores ORDER BY nombre ASC");
   res.json(rows);
 });
 
-// POST crear sabor
 router.post("/shisha/sabores", authenticate, async (req, res) => {
   const { nombre } = req.body;
   if (!nombre) return res.status(400).json({ error: "Falta el nombre" });
@@ -50,7 +48,6 @@ router.post("/shisha/sabores", authenticate, async (req, res) => {
   res.json(rows);
 });
 
-// PUT cargar stock de tabaco por sabor
 router.put("/shisha/sabores/:id/stock", authenticate, async (req, res) => {
   const { paquetes } = req.body;
   await pool.promise().query(
@@ -61,29 +58,24 @@ router.put("/shisha/sabores/:id/stock", authenticate, async (req, res) => {
   res.json(rows);
 });
 
-// PUT activar/desactivar sabor
 router.put("/shisha/sabores/:id/toggle", authenticate, async (req, res) => {
-  await pool.promise().query(
-    "UPDATE shisha_sabores SET activo = NOT activo WHERE id = ?",
-    [req.params.id]
-  );
+  await pool.promise().query("UPDATE shisha_sabores SET activo = NOT activo WHERE id = ?", [req.params.id]);
   const [rows] = await pool.promise().query("SELECT * FROM shisha_sabores ORDER BY nombre ASC");
   res.json(rows);
 });
 
-// POST registrar alquiler
+// ── ALQUILER ──
+
 router.post("/shisha/alquiler", authenticate, async (req, res) => {
-  const { tipo, sabor_id } = req.body;
+  const { tipo, sabor_id, nota } = req.body;
 
   const [configRows] = await pool.promise().query("SELECT * FROM shisha_insumos LIMIT 1");
   const config = configRows[0];
 
-  // Verificar insumos generales
   if (config.carbones < 2) return res.status(400).json({ error: "Sin stock de carbones" });
   if (config.papeles < 1) return res.status(400).json({ error: "Sin stock de papel aluminio" });
-
-  // Verificar sabor
   if (!sabor_id) return res.status(400).json({ error: "Seleccioná un sabor" });
+
   const [saborRows] = await pool.promise().query("SELECT * FROM shisha_sabores WHERE id = ? AND activo = 1", [sabor_id]);
   const sabor = saborRows[0];
   if (!sabor) return res.status(400).json({ error: "Sabor no encontrado" });
@@ -94,20 +86,15 @@ router.post("/shisha/alquiler", authenticate, async (req, res) => {
   const costo_pesos = costo_usd * config.precio_dolar;
   const ganancia = precio_venta - costo_pesos;
 
-  // Descontar insumos
-  await pool.promise().query(
-    "UPDATE shisha_insumos SET carbones = carbones - 2, papeles = papeles - 1",
-    []
-  );
+  await pool.promise().query("UPDATE shisha_insumos SET carbones = carbones - 2, papeles = papeles - 1");
   await pool.promise().query(
     "UPDATE shisha_sabores SET stock_paquetes = stock_paquetes - ? WHERE id = ?",
     [1 / 3, sabor_id]
   );
 
-  // Registrar venta
   await pool.promise().query(
-    "INSERT INTO shisha_ventas (tipo, precio_venta, costo_usd, precio_dolar, costo_pesos, ganancia, sabor_id, sabor_nombre) VALUES (?,?,?,?,?,?,?,?)",
-    [tipo, precio_venta, costo_usd, config.precio_dolar, costo_pesos, ganancia, sabor_id, sabor.nombre]
+    "INSERT INTO shisha_ventas (tipo, precio_venta, costo_usd, precio_dolar, costo_pesos, ganancia, sabor_id, sabor_nombre, nota) VALUES (?,?,?,?,?,?,?,?,?)",
+    [tipo, precio_venta, costo_usd, config.precio_dolar, costo_pesos, ganancia, sabor_id, sabor.nombre, nota || null]
   );
 
   const [insumos] = await pool.promise().query("SELECT * FROM shisha_insumos LIMIT 1");
@@ -115,13 +102,33 @@ router.post("/shisha/alquiler", authenticate, async (req, res) => {
   res.json({ ok: true, insumos: insumos[0], sabores, ganancia, costo_pesos });
 });
 
+// PUT anular venta (devuelve insumos al stock)
+router.put("/shisha/ventas/:id/anular", authenticate, async (req, res) => {
+  const [rows] = await pool.promise().query("SELECT * FROM shisha_ventas WHERE id = ? AND anulada = 0", [req.params.id]);
+  const venta = rows[0];
+  if (!venta) return res.status(404).json({ error: "Venta no encontrada o ya anulada" });
+
+  await pool.promise().query("UPDATE shisha_ventas SET anulada = 1 WHERE id = ?", [req.params.id]);
+
+  // Devolver insumos
+  await pool.promise().query("UPDATE shisha_insumos SET carbones = carbones + 2, papeles = papeles + 1");
+  if (venta.sabor_id) {
+    await pool.promise().query(
+      "UPDATE shisha_sabores SET stock_paquetes = stock_paquetes + ? WHERE id = ?",
+      [1 / 3, venta.sabor_id]
+    );
+  }
+
+  res.json({ ok: true });
+});
+
 // GET historial ventas
 router.get("/shisha/ventas", authenticate, async (req, res) => {
   const { desde, hasta } = req.query;
-  let query = "SELECT * FROM shisha_ventas";
+  let query = "SELECT * FROM shisha_ventas WHERE anulada = 0";
   const params = [];
   if (desde && hasta) {
-    query += " WHERE DATE(created_at) BETWEEN ? AND ?";
+    query += " AND DATE(created_at) BETWEEN ? AND ?";
     params.push(desde, hasta);
   }
   query += " ORDER BY created_at DESC";
@@ -133,7 +140,6 @@ router.get("/shisha/ventas", authenticate, async (req, res) => {
     ganancia: acc.ganancia + Number(v.ganancia),
   }), { recaudado: 0, costos: 0, ganancia: 0 });
 
-  // Ranking de sabores
   const ranking = rows.reduce((acc, v) => {
     if (!v.sabor_nombre) return acc;
     acc[v.sabor_nombre] = (acc[v.sabor_nombre] || 0) + 1;
@@ -141,6 +147,25 @@ router.get("/shisha/ventas", authenticate, async (req, res) => {
   }, {});
 
   res.json({ ventas: rows, totales, ranking });
+});
+
+// GET resumen mensual (mes actual vs mes anterior)
+router.get("/shisha/resumen", authenticate, async (req, res) => {
+  const [actual] = await pool.promise().query(`
+    SELECT COUNT(*) as cantidad, COALESCE(SUM(precio_venta),0) as recaudado, COALESCE(SUM(ganancia),0) as ganancia
+    FROM shisha_ventas WHERE anulada = 0 AND MONTH(created_at) = MONTH(NOW()) AND YEAR(created_at) = YEAR(NOW())
+  `);
+  const [anterior] = await pool.promise().query(`
+    SELECT COUNT(*) as cantidad, COALESCE(SUM(precio_venta),0) as recaudado, COALESCE(SUM(ganancia),0) as ganancia
+    FROM shisha_ventas WHERE anulada = 0 AND MONTH(created_at) = MONTH(NOW() - INTERVAL 1 MONTH) AND YEAR(created_at) = YEAR(NOW() - INTERVAL 1 MONTH)
+  `);
+  const [saborTop] = await pool.promise().query(`
+    SELECT sabor_nombre, COUNT(*) as total FROM shisha_ventas
+    WHERE anulada = 0 AND sabor_nombre IS NOT NULL
+    GROUP BY sabor_nombre ORDER BY total DESC LIMIT 5
+  `);
+
+  res.json({ actual: actual[0], anterior: anterior[0], saborTop });
 });
 
 module.exports = router;
