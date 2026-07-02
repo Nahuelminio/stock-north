@@ -339,7 +339,7 @@ router.post("/:id/pago", authenticate, soloAdmin, async (req, res) => {
 
 /**
  * DELETE /vendedores/pagos/:pagoId
- * Elimina un pago mal registrado
+ * Elimina un pago mal registrado (v2)
  */
 router.delete("/pagos/:pagoId", authenticate, soloAdmin, async (req, res) => {
   const pagoId = Number(req.params.pagoId);
