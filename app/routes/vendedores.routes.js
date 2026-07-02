@@ -338,6 +338,23 @@ router.post("/:id/pago", authenticate, soloAdmin, async (req, res) => {
 });
 
 /**
+ * DELETE /vendedores/pagos/:pagoId
+ * Elimina un pago mal registrado
+ */
+router.delete("/pagos/:pagoId", authenticate, soloAdmin, async (req, res) => {
+  const pagoId = Number(req.params.pagoId);
+  try {
+    const [[pago]] = await pool.promise().query("SELECT id FROM pagos WHERE id = ? AND vendedor_id IS NOT NULL", [pagoId]);
+    if (!pago) return res.status(404).json({ error: "Pago no encontrado" });
+    await pool.promise().query("DELETE FROM pagos WHERE id = ?", [pagoId]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("❌ Error DELETE /vendedores/pagos/:id:", e);
+    res.status(500).json({ error: "Error al eliminar pago" });
+  }
+});
+
+/**
  * GET /vendedores/:id/pagos
  * Historial de pagos de un vendedor
  */
