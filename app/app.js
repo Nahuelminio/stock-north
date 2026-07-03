@@ -9,7 +9,9 @@ const cors = require("cors");
 const ALLOWED_ORIGINS = [
   "https://socknorth.net",
   "https://chocolate-donkey-945086.hostingersite.com",
-  process.env.CATALOG_NORTH_URL, // dominio producción del catálogo North
+  "https://thenorthshop.net",
+  "https://www.thenorthshop.net",
+  process.env.CATALOG_NORTH_URL,
 ].filter(Boolean);
 
 app.use(
