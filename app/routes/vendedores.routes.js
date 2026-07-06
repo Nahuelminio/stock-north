@@ -379,14 +379,16 @@ router.get("/:id/pagos", authenticate, soloAdmin, async (req, res) => {
  */
 router.get("/ventas/detalle", authenticate, soloAdmin, async (req, res) => {
   try {
-    const { semana, mes, anio } = req.query;
+    const { semana, mes, anio, desde, hasta } = req.query;
     const anioNum = anio ? Number(anio) : new Date().getFullYear();
 
     let whereFecha = "";
     const params = [];
 
-    if (semana) {
-      // Calcular lunes/domingo de la semana ISO
+    if (desde && hasta) {
+      whereFecha = "AND DATE(v.fecha) BETWEEN ? AND ?";
+      params.push(desde, hasta);
+    } else if (semana) {
       const semanaNum = Number(semana);
       const lunes = getMondayOfISOWeek(semanaNum, anioNum);
       const domingo = new Date(lunes);
