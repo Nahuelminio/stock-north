@@ -373,4 +373,91 @@ router.get("/:id/pagos", authenticate, soloAdmin, async (req, res) => {
   }
 });
 
+/**
+ * GET /vendedores/ventas/detalle?semana=X&anio=Y  (o mes=X&anio=Y)
+ * Devuelve todas las ventas de todos los vendedores con producto y sabor
+ */
+router.get("/ventas/detalle", authenticate, soloAdmin, async (req, res) => {
+  try {
+    const { semana, mes, anio } = req.query;
+    const anioNum = anio ? Number(anio) : new Date().getFullYear();
+
+    let whereFecha = "";
+    const params = [];
+
+    if (semana) {
+      // Calcular lunes/domingo de la semana ISO
+      const semanaNum = Number(semana);
+      const lunes = getMondayOfISOWeek(semanaNum, anioNum);
+      const domingo = new Date(lunes);
+      domingo.setDate(lunes.getDate() + 6);
+      whereFecha = "AND DATE(v.fecha) BETWEEN ? AND ?";
+      params.push(lunes.toISOString().slice(0, 10), domingo.toISOString().slice(0, 10));
+    } else if (mes) {
+      whereFecha = "AND MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?";
+      params.push(Number(mes), anioNum);
+    }
+
+    const [rows] = await pool.promise().query(`
+      SELECT
+        v.id,
+        v.fecha,
+        v.cantidad,
+        v.precio_unitario,
+        (v.cantidad * COALESCE(v.precio_unitario, 0)) AS total,
+        u.id AS vendedor_id,
+        u.email AS vendedor_email,
+        g.id AS gusto_id,
+        g.nombre AS sabor,
+        p.id AS producto_id,
+        p.nombre AS producto,
+        sc.nombre AS sucursal_stock
+      FROM ventas v
+      JOIN usuarios u ON u.id = v.vendedor_id AND u.rol = 'vendedor'
+      JOIN gustos g ON g.id = v.gusto_id
+      JOIN productos p ON p.id = g.producto_id
+      LEFT JOIN sucursales sc ON sc.id = v.sucursal_id
+      WHERE 1=1 ${whereFecha}
+      ORDER BY v.fecha DESC, u.email, p.nombre, g.nombre
+    `, params);
+
+    res.json(rows);
+  } catch (e) {
+    console.error("❌ Error GET /vendedores/ventas/detalle:", e);
+    res.status(500).json({ error: "Error al obtener detalle de ventas" });
+  }
+});
+
+/**
+ * PUT /vendedores/ventas/:ventaId
+ * Edita cantidad y/o precio_unitario de una venta de vendedor
+ */
+router.put("/ventas/:ventaId", authenticate, soloAdmin, async (req, res) => {
+  const ventaId = Number(req.params.ventaId);
+  const { cantidad, precio_unitario } = req.body;
+
+  const cantNum   = Number(cantidad);
+  const precioNum = Number(precio_unitario);
+
+  if (!Number.isFinite(cantNum)   || cantNum   <= 0) return res.status(400).json({ error: "Cantidad inválida" });
+  if (!Number.isFinite(precioNum) || precioNum <  0) return res.status(400).json({ error: "Precio inválido" });
+
+  try {
+    const [[venta]] = await pool.promise().query(
+      "SELECT id, vendedor_id FROM ventas v JOIN usuarios u ON u.id = v.vendedor_id AND u.rol = 'vendedor' WHERE v.id = ?",
+      [ventaId]
+    );
+    if (!venta) return res.status(404).json({ error: "Venta no encontrada" });
+
+    await pool.promise().query(
+      "UPDATE ventas SET cantidad = ?, precio_unitario = ? WHERE id = ?",
+      [cantNum, precioNum, ventaId]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("❌ Error PUT /vendedores/ventas/:id:", e);
+    res.status(500).json({ error: "Error al editar venta" });
+  }
+});
+
 module.exports = router;
