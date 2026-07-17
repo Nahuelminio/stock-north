@@ -4,6 +4,18 @@ const pool       = require("../db");
 const authenticate = require("../middlewares/authenticate");
 
 const CENTRAL_ID = 7;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+const TELEGRAM_CHAT_ID   = process.env.TELEGRAM_CHAT_ID   || "";
+
+/** Aviso fire-and-forget por Telegram (texto plano, sin parse_mode para evitar errores de parseo). */
+function avisarTelegram(texto) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: texto, disable_web_page_preview: true }),
+  }).catch((err) => console.error("Telegram pedidos error:", err.message || err));
+}
 
 const soloAdmin = (req, res, next) => {
   if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo administradores" });
@@ -13,10 +25,10 @@ const soloAdmin = (req, res, next) => {
 /**
  * POST /pedidos-central
  * Público — lo llama el catálogo cuando el usuario envía su pedido por WhatsApp.
- * Body: { items: [{gusto_id, modelo, gusto, qty, precio}], total, notas? }
+ * Body: { items: [{gusto_id, modelo, gusto, qty, precio}], total, notas?, nombre?, telefono? }
  */
 router.post("/pedidos-central", async (req, res) => {
-  const { items, total, notas } = req.body;
+  const { items, total, notas, nombre, telefono } = req.body;
 
   if (!Array.isArray(items) || items.length === 0)
     return res.status(400).json({ error: "El pedido no tiene items" });
@@ -27,15 +39,55 @@ router.post("/pedidos-central", async (req, res) => {
       return res.status(400).json({ error: "Item inválido en el pedido" });
   }
 
+  const nombreCliente   = nombre   ? String(nombre).trim().slice(0, 120)   : null;
+  const telefonoCliente = telefono ? String(telefono).trim().slice(0, 40)  : null;
+
   try {
     const [result] = await pool.promise().query(
-      `INSERT INTO pedidos_central (items, total, notas) VALUES (?, ?, ?)`,
-      [JSON.stringify(items), Number(total) || 0, notas || null]
+      `INSERT INTO pedidos_central (items, total, notas, nombre_cliente, telefono_cliente)
+       VALUES (?, ?, ?, ?, ?)`,
+      [JSON.stringify(items), Number(total) || 0, notas || null, nombreCliente, telefonoCliente]
     );
+
+    // Aviso por Telegram de pedido nuevo (no bloquea la respuesta)
+    const totalUnidades = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
+    const resumenItems = items
+      .map((i) => `• ${i.modelo} - ${i.gusto}${i.qty > 1 ? ` x${i.qty}` : ""}`)
+      .join("\n");
+    const totalFmt = `$ ${(Number(total) || 0).toLocaleString("es-AR")}`;
+    const mensaje =
+      `🛒 Nuevo pedido #${result.insertId}\n` +
+      (nombreCliente ? `👤 ${nombreCliente}\n` : "") +
+      (telefonoCliente ? `💬 ${telefonoCliente}\n` : "") +
+      `\n${resumenItems}\n\n${totalUnidades} u. · ${totalFmt}`;
+    avisarTelegram(mensaje);
+
     res.status(201).json({ ok: true, id: result.insertId });
   } catch (e) {
     console.error("❌ POST /pedidos-central:", e);
     res.status(500).json({ error: "Error al guardar el pedido" });
+  }
+});
+
+/**
+ * GET /pedidos-central/:id/estado
+ * Público — el catálogo consulta el estado de un pedido para mostrar seguimiento.
+ * Devuelve solo lo mínimo, sin datos sensibles.
+ */
+router.get("/pedidos-central/:id/estado", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1)
+    return res.status(400).json({ error: "ID inválido" });
+  try {
+    const [[row]] = await pool.promise().query(
+      "SELECT id, estado, total, fecha_creacion, fecha_confirmacion FROM pedidos_central WHERE id = ?",
+      [id]
+    );
+    if (!row) return res.status(404).json({ error: "Pedido no encontrado" });
+    res.json(row);
+  } catch (e) {
+    console.error("❌ GET /pedidos-central/:id/estado:", e);
+    res.status(500).json({ error: "Error al consultar el pedido" });
   }
 });
 
@@ -58,7 +110,8 @@ router.get("/pedidos-central", authenticate, soloAdmin, async (req, res) => {
     );
 
     const [rows] = await pool.promise().query(
-      `SELECT id, estado, items, total, notas, fecha_creacion, fecha_confirmacion
+      `SELECT id, estado, items, total, notas, nombre_cliente, telefono_cliente,
+              fecha_creacion, fecha_confirmacion
        FROM pedidos_central
        ${whereEstado}
        ORDER BY estado = 'pendiente' DESC, fecha_creacion DESC
