@@ -63,7 +63,7 @@ router.post("/pedidos-central", async (req, res) => {
     // Aviso por Telegram de pedido nuevo (no bloquea la respuesta)
     const totalUnidades = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
     const resumenItems = items
-      .map((i) => `• ${i.modelo} - ${i.gusto}${i.qty > 1 ? ` x${i.qty}` : ""}`)
+      .map((i) => `• ${i.qty > 1 ? `${i.qty}× ` : ""}${i.modelo} - ${i.gusto}`)
       .join("\n");
     const totalFmt = `$ ${(Number(total) || 0).toLocaleString("es-AR")}`;
     const pagoLinea = metodoPago
