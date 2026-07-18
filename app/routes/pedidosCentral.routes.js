@@ -25,10 +25,12 @@ const soloAdmin = (req, res, next) => {
 /**
  * POST /pedidos-central
  * Público — lo llama el catálogo cuando el usuario envía su pedido por WhatsApp.
- * Body: { items: [{gusto_id, modelo, gusto, qty, precio}], total, notas?, nombre?, telefono? }
+ * Body: { items: [...], total, notas?, nombre?, telefono?,
+ *         metodo_pago? ('efectivo'|'transferencia'), direccion?, referencia?, ubicacion_url? }
  */
 router.post("/pedidos-central", async (req, res) => {
-  const { items, total, notas, nombre, telefono } = req.body;
+  const { items, total, notas, nombre, telefono,
+          metodo_pago, envio, direccion, referencia, ubicacion_url } = req.body;
 
   if (!Array.isArray(items) || items.length === 0)
     return res.status(400).json({ error: "El pedido no tiene items" });
@@ -41,12 +43,21 @@ router.post("/pedidos-central", async (req, res) => {
 
   const nombreCliente   = nombre   ? String(nombre).trim().slice(0, 120)   : null;
   const telefonoCliente = telefono ? String(telefono).trim().slice(0, 40)  : null;
+  const metodoPago      = metodo_pago === "transferencia" ? "transferencia"
+                        : metodo_pago === "efectivo"      ? "efectivo" : null;
+  // Envío como opción propia (independiente del método de pago)
+  const esEnvio         = envio === true || envio === "true";
+  const dir             = esEnvio && direccion     ? String(direccion).trim().slice(0, 255)     : null;
+  const ref             = esEnvio && referencia    ? String(referencia).trim().slice(0, 255)    : null;
+  const ubic            = esEnvio && ubicacion_url ? String(ubicacion_url).trim().slice(0, 255) : null;
 
   try {
     const [result] = await pool.promise().query(
-      `INSERT INTO pedidos_central (items, total, notas, nombre_cliente, telefono_cliente)
-       VALUES (?, ?, ?, ?, ?)`,
-      [JSON.stringify(items), Number(total) || 0, notas || null, nombreCliente, telefonoCliente]
+      `INSERT INTO pedidos_central
+         (items, total, notas, nombre_cliente, telefono_cliente, metodo_pago, direccion, referencia, ubicacion_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [JSON.stringify(items), Number(total) || 0, notas || null,
+       nombreCliente, telefonoCliente, metodoPago, dir, ref, ubic]
     );
 
     // Aviso por Telegram de pedido nuevo (no bloquea la respuesta)
@@ -55,11 +66,20 @@ router.post("/pedidos-central", async (req, res) => {
       .map((i) => `• ${i.modelo} - ${i.gusto}${i.qty > 1 ? ` x${i.qty}` : ""}`)
       .join("\n");
     const totalFmt = `$ ${(Number(total) || 0).toLocaleString("es-AR")}`;
+    const pagoLinea = metodoPago
+      ? `\n💳 ${metodoPago === "transferencia" ? "Transferencia" : "Efectivo"}`
+      : "";
+    const envioLinea = esEnvio
+      ? `\n🚚 ENVÍO — cotizar\n📍 ${dir || "(sin dirección)"}` +
+        (ref  ? `\n   Ref: ${ref}` : "") +
+        (ubic ? `\n   ${ubic}` : "")
+      : "";
     const mensaje =
       `🛒 Nuevo pedido #${result.insertId}\n` +
       (nombreCliente ? `👤 ${nombreCliente}\n` : "") +
       (telefonoCliente ? `💬 ${telefonoCliente}\n` : "") +
-      `\n${resumenItems}\n\n${totalUnidades} u. · ${totalFmt}`;
+      `\n${resumenItems}\n\n${totalUnidades} u. · ${totalFmt}` +
+      pagoLinea + envioLinea;
     avisarTelegram(mensaje);
 
     res.status(201).json({ ok: true, id: result.insertId });
@@ -111,6 +131,7 @@ router.get("/pedidos-central", authenticate, soloAdmin, async (req, res) => {
 
     const [rows] = await pool.promise().query(
       `SELECT id, estado, items, total, notas, nombre_cliente, telefono_cliente,
+              metodo_pago, direccion, referencia, ubicacion_url,
               fecha_creacion, fecha_confirmacion
        FROM pedidos_central
        ${whereEstado}
