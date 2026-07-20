@@ -198,10 +198,14 @@ router.post("/pedidos-central/:id/confirmar", authenticate, soloAdmin, async (re
       "SELECT * FROM pedidos_central WHERE id = ? FOR UPDATE",
       [req.params.id]
     );
-    if (!pedido)
-      return conn.rollback().then(() => { conn.release(); res.status(404).json({ error: "Pedido no encontrado" }); });
-    if (pedido.estado !== "pendiente")
-      return conn.rollback().then(() => { conn.release(); res.status(400).json({ error: "El pedido ya fue procesado" }); });
+    if (!pedido) {
+      await conn.rollback();
+      return res.status(404).json({ error: "Pedido no encontrado" });
+    }
+    if (pedido.estado !== "pendiente") {
+      await conn.rollback();
+      return res.status(400).json({ error: "El pedido ya fue procesado" });
+    }
 
     const items = typeof pedido.items === "string" ? JSON.parse(pedido.items) : pedido.items;
 
@@ -213,12 +217,10 @@ router.post("/pedidos-central/:id/confirmar", authenticate, soloAdmin, async (re
       );
       if (!st) {
         await conn.rollback();
-        conn.release();
         return res.status(400).json({ error: `Sin stock registrado para: ${item.modelo} - ${item.gusto}` });
       }
       if (st.cantidad < item.qty) {
         await conn.rollback();
-        conn.release();
         return res.status(400).json({
           error: `Stock insuficiente para ${item.modelo} - ${item.gusto}. Disponible: ${st.cantidad}, pedido: ${item.qty}`,
         });
