@@ -11,7 +11,7 @@ const pool = require("../db");
 // GET /sucursales — requiere autenticación
 router.get("/", authenticate, async (req, res) => {
   try {
-    const [results] = await pool.promise().query("SELECT * FROM sucursales");
+    const [results] = await pool.promise().query("SELECT * FROM sucursales WHERE activo = 1 ORDER BY nombre");
     res.json(results);
   } catch (err) {
     console.error("❌ Error al obtener sucursales:", err);

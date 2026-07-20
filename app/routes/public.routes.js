@@ -51,6 +51,7 @@ router.get("/public/sucursales", publicCors, async (_req, res) => {
           nombre AS nombre_real,
           apodo
         FROM sucursales
+        WHERE activo = 1
         ORDER BY nombre ASC
       `);
     res.json(rows);
