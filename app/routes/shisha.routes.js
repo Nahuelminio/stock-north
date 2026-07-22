@@ -168,7 +168,7 @@ router.get("/shisha/resumen", authenticate, async (req, res) => {
   res.json({ actual: actual[0], anterior: anterior[0], saborTop });
 });
 
-// GET cuenta shisha: total ventas, pagado, deuda + historial pagos
+// GET cuenta shisha: total ventas shisha, pagado desde shisha_pagos, deuda
 router.get("/shisha/cuenta", authenticate, async (req, res) => {
   const [[totales]] = await pool.promise().query(`
     SELECT COALESCE(SUM(precio_venta), 0) AS total_shisha
