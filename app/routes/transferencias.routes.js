@@ -173,14 +173,23 @@ router.post("/:id/confirmar", authenticate, soloAdmin, async (req, res) => {
         });
       }
 
-      // Tomar el precio del stock de origen para usarlo si hay que crear la fila en destino
+      // Tomar el precio del stock de origen; si es 0 o null, usar el precio del producto
       const [[stockOrigen]] = await conn.query(
         "SELECT precio FROM stock WHERE gusto_id = ? AND sucursal_id = ?",
         [item.gusto_id, t.sucursal_origen_id]
       );
-      const precioOrigen = stockOrigen?.precio ?? 0;
+      let precioOrigen = Number(stockOrigen?.precio) || 0;
+
+      if (!precioOrigen) {
+        const [[prod]] = await conn.query(
+          "SELECT p.precio FROM productos p JOIN gustos g ON g.producto_id = p.id WHERE g.id = ?",
+          [item.gusto_id]
+        );
+        precioOrigen = Number(prod?.precio) || 0;
+      }
 
       // Sumar en destino — upsert atómico (requiere UNIQUE KEY (gusto_id, sucursal_id) en stock)
+      // Si la fila ya existe, solo suma cantidad (no pisa el precio que ya tiene la sucursal destino)
       await conn.query(
         `INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio)
          VALUES (?, ?, ?, ?)
