@@ -168,22 +168,19 @@ router.get("/shisha/resumen", authenticate, async (req, res) => {
   res.json({ actual: actual[0], anterior: anterior[0], saborTop });
 });
 
-// GET cuenta de Fagu: total shisha, pagado, deuda + historial pagos
+// GET cuenta shisha: total ventas, pagado, deuda + historial pagos
 router.get("/shisha/cuenta", authenticate, async (req, res) => {
-  const FAGU_ID = 10;
   const [[totales]] = await pool.promise().query(`
     SELECT COALESCE(SUM(precio_venta), 0) AS total_shisha
     FROM shisha_ventas WHERE anulada = 0
   `);
   const [[pagado]] = await pool.promise().query(`
-    SELECT COALESCE(SUM(monto), 0) AS total_pagado
-    FROM pagos WHERE sucursal_id = ? AND (vendedor_id IS NULL OR vendedor_id = 0) AND estado = 'ok'
-  `, [FAGU_ID]);
+    SELECT COALESCE(SUM(monto), 0) AS total_pagado FROM shisha_pagos
+  `);
   const [historial] = await pool.promise().query(`
-    SELECT id, monto, metodo, fecha, referencia AS notas
-    FROM pagos WHERE sucursal_id = ? AND (vendedor_id IS NULL OR vendedor_id = 0) AND estado = 'ok'
-    ORDER BY fecha DESC LIMIT 30
-  `, [FAGU_ID]);
+    SELECT id, monto, metodo, fecha, notas
+    FROM shisha_pagos ORDER BY fecha DESC LIMIT 30
+  `);
 
   const total_shisha = Number(totales.total_shisha);
   const total_pagado = Number(pagado.total_pagado);
@@ -195,7 +192,7 @@ router.get("/shisha/cuenta", authenticate, async (req, res) => {
   });
 });
 
-// POST registrar pago de Fagu
+// POST registrar pago de shisha
 router.post("/shisha/cuenta/pago", authenticate, async (req, res) => {
   if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
   const { monto, metodo, fecha, notas } = req.body;
@@ -205,20 +202,18 @@ router.post("/shisha/cuenta/pago", authenticate, async (req, res) => {
 
   const fechaPago = fecha ? new Date(fecha + "T12:00:00") : new Date();
   await pool.promise().query(
-    "INSERT INTO pagos (sucursal_id, metodo, monto, fecha, referencia, estado) VALUES (10, ?, ?, ?, ?, 'ok')",
+    "INSERT INTO shisha_pagos (metodo, monto, fecha, notas) VALUES (?, ?, ?, ?)",
     [metodo, montoNum, fechaPago, notas || null]
   );
   res.json({ ok: true });
 });
 
-// DELETE pago de Fagu
+// DELETE pago de shisha
 router.delete("/shisha/cuenta/pago/:id", authenticate, async (req, res) => {
   if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
-  const [[p]] = await pool.promise().query(
-    "SELECT id FROM pagos WHERE id = ? AND sucursal_id = 10", [req.params.id]
-  );
+  const [[p]] = await pool.promise().query("SELECT id FROM shisha_pagos WHERE id = ?", [req.params.id]);
   if (!p) return res.status(404).json({ error: "Pago no encontrado" });
-  await pool.promise().query("DELETE FROM pagos WHERE id = ?", [req.params.id]);
+  await pool.promise().query("DELETE FROM shisha_pagos WHERE id = ?", [req.params.id]);
   res.json({ ok: true });
 });
 
