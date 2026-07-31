@@ -261,6 +261,13 @@ router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
     let nombreLabel    = "—";
 
     if (esVendedor) {
+      // Nombre del vendedor, para que el panel no muestre un guión suelto
+      const [[u]] = await pool.promise().query(
+        "SELECT email FROM usuarios WHERE id = ?",
+        [userId]
+      );
+      if (u?.email) nombreLabel = u.email.split("@")[0];
+
       // Vendedores: facturado por vendedor_id (puede haber vendido desde varias sucursales)
       const [[fila]] = await pool.promise().query(
         `SELECT COALESCE(SUM(v.cantidad * v.precio_unitario), 0) AS total_facturado
