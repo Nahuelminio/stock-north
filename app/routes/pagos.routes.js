@@ -520,14 +520,12 @@ router.post("/pagos/comprobante", authenticate, async (req, res) => {
     const { imagen, mime, sucursal_id: sucursalBody } = req.body || {};
 
     if (!imagen) {
-      conn.release();
       return res.status(400).json({ error: "Falta la imagen del comprobante" });
     }
 
     // La sucursal solo puede cargar para sí misma; el admin elige a cuál
     const sucId = rol === "admin" ? Number(sucursalBody) || null : sucursalId;
     if (!sucId) {
-      conn.release();
       return res.status(400).json({ error: "No se pudo determinar la sucursal" });
     }
 
@@ -541,14 +539,12 @@ router.post("/pagos/comprobante", authenticate, async (req, res) => {
       datos = await leerComprobante(base64, mediaType);
     } catch (e) {
       console.error("❌ Error al leer el comprobante:", e);
-      conn.release();
       return res.status(422).json({
         error: "No se pudo leer el comprobante. Probá con una foto más nítida.",
       });
     }
 
     if (!datos.es_comprobante) {
-      conn.release();
       return res.status(422).json({
         error: "La imagen no parece ser un comprobante de pago.",
       });
@@ -556,7 +552,6 @@ router.post("/pagos/comprobante", authenticate, async (req, res) => {
 
     const montoNum = Number(datos.monto);
     if (!montoNum || isNaN(montoNum) || montoNum <= 0) {
-      conn.release();
       return res.status(422).json({
         error: "No se pudo leer el monto del comprobante.",
       });
@@ -585,7 +580,6 @@ router.post("/pagos/comprobante", authenticate, async (req, res) => {
       [hash_unico]
     );
     if (dup.length) {
-      conn.release();
       return res.status(409).json({
         error: "Este comprobante ya fue cargado.",
         status: "duplicado",
@@ -666,18 +660,15 @@ router.delete("/pagos/:id/rechazar", authenticate, async (req, res) => {
   const conn = await pool.promise().getConnection();
   try {
     if (req.user?.rol !== "admin") {
-      conn.release();
       return res.status(403).json({ error: "Sólo admin" });
     }
     const [[pago]] = await conn.query("SELECT estado FROM pagos WHERE id = ?", [
       req.params.id,
     ]);
     if (!pago) {
-      conn.release();
       return res.status(404).json({ error: "Pago no encontrado" });
     }
     if (pago.estado !== "needs_review") {
-      conn.release();
       return res
         .status(400)
         .json({ error: "Sólo se pueden rechazar pagos pendientes de revisión" });
