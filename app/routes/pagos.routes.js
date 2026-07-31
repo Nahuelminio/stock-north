@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
+const { avisarTelegram } = require("../services/telegram");
 
 /* ----------------------- Helpers ----------------------- */
 
@@ -676,6 +677,39 @@ router.post("/pagos/comprobante", authenticate, async (req, res) => {
         confianza: Number(datos.confianza) || 0,
       },
     });
+
+    // Aviso al admin — después de responder, para no demorar a quien subió la foto
+    try {
+      const [[quien]] = await conn.query(
+        vendId
+          ? "SELECT email AS nombre FROM usuarios WHERE id = ?"
+          : "SELECT nombre FROM sucursales WHERE id = ?",
+        [vendId || sucId]
+      );
+      const monto = montoNum.toLocaleString("es-AR", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+      const dudas = [];
+      if (Number(datos.confianza) < 0.7) dudas.push("lectura dudosa");
+      if (datos.fecha_asumida) dudas.push("sin fecha en el comprobante");
+
+      avisarTelegram(
+        [
+          "Nuevo comprobante para aprobar",
+          `${vendId ? "Vendedor" : "Sucursal"}: ${quien?.nombre || "?"}`,
+          `Monto: $${monto}`,
+          `Fecha: ${datos.fecha}`,
+          `Metodo: ${metodoNorm}`,
+          datos.referencia ? `Operacion: ${datos.referencia}` : null,
+          dudas.length ? `Revisar: ${dudas.join(", ")}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n")
+      );
+    } catch (e) {
+      console.error("No se pudo avisar por Telegram:", e.message);
+    }
   } catch (error) {
     try { await conn.rollback(); } catch (_) {}
     console.error("❌ Error en /pagos/comprobante:", error);
