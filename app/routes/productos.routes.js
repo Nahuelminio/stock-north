@@ -25,11 +25,12 @@ router.get("/", authenticate, async (req, res) => {
       JOIN gustos g ON g.producto_id = p.id
       JOIN stock st ON st.gusto_id = g.id
       JOIN sucursales s ON s.id = st.sucursal_id
+      WHERE g.activo = 1
     `;
 
     const params = [];
     if (rol !== "admin" && rol !== "vendedor") {
-      query += " WHERE s.id = ?";
+      query += " AND s.id = ?";
       params.push(sucursalId);
     }
 
@@ -327,7 +328,7 @@ router.get("/disponibles", authenticate, async (req, res) => {
       FROM productos p
       JOIN gustos g ON g.producto_id = p.id
       JOIN stock st ON st.gusto_id = g.id
-      WHERE st.sucursal_id = ?`,
+      WHERE st.sucursal_id = ? AND g.activo = 1`,
       [sucursal_id]
     );
     res.json(results);
@@ -338,7 +339,8 @@ router.get("/disponibles", authenticate, async (req, res) => {
 });
 
 // Todos los gustos con nombre de producto (para reposición sin filtro de sucursal)
-// Deduplica por (producto_id, nombre gusto) tomando el MIN(id) para evitar duplicados entre sucursales
+// El GROUP BY quedó de cuando había gustos duplicados; hoy se filtran por activo,
+// pero se conserva por si alguna carga vieja volviera a repetir un nombre.
 router.get("/gustos-todos", authenticate, async (req, res) => {
   try {
     const [results] = await pool.promise().query(
@@ -347,6 +349,7 @@ router.get("/gustos-todos", authenticate, async (req, res) => {
               MIN(p.id) AS producto_id, p.nombre AS producto_nombre
        FROM gustos g
        JOIN productos p ON p.id = g.producto_id
+       WHERE g.activo = 1
        GROUP BY p.nombre, g.nombre
        ORDER BY p.nombre, g.nombre`
     );

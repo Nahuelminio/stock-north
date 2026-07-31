@@ -114,7 +114,7 @@ router.get("/buscar-por-codigo/:codigo", async (req, res) => {
       FROM gustos g
       JOIN productos p ON g.producto_id = p.id
       JOIN stock st ON st.gusto_id = g.id
-      WHERE g.codigo_barra = ? AND st.sucursal_id = ?
+      WHERE g.codigo_barra = ? AND st.sucursal_id = ? AND g.activo = 1
       LIMIT 1`,
       [codigo, sucursal_id]
     );
