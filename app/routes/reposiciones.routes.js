@@ -283,6 +283,34 @@ router.get("/costos-central", authenticate, async (req, res) => {
     const ventasMap = {};
     ventas.forEach(v => { ventasMap[v.gusto_id] = { unidades_vendidas: Number(v.unidades_vendidas), total_vendido: Number(v.total_vendido) }; });
 
+    // --- Ventas de las sucursales ---
+    // Central compra toda la mercadería y la reparte; lo que las sucursales
+    // venden se lo rinden a Central, así que es ingreso suyo. El costo ya está
+    // contado en las reposiciones de Central, por eso no se suma de nuevo.
+    // (Las reposiciones cargadas en sucursales son del método viejo, anterior a
+    // las transferencias, y por eso no tienen costo: era la misma mercadería.)
+    let whereSuc = "v.sucursal_id <> ?";
+    const paramsSuc = [CENTRAL_ID];
+    if (desde) { whereSuc += " AND DATE(v.fecha) >= ?"; paramsSuc.push(desde); }
+    if (hasta) { whereSuc += " AND DATE(v.fecha) <= ?"; paramsSuc.push(hasta); }
+
+    const [ventasSuc] = await pool.promise().query(`
+      SELECT
+        v.gusto_id,
+        SUM(v.cantidad) AS unidades_sucursales,
+        SUM(v.cantidad * COALESCE(v.precio_unitario, 0)) AS total_sucursales
+      FROM ventas v
+      WHERE ${whereSuc}
+      GROUP BY v.gusto_id
+    `, paramsSuc);
+    const sucursalesMap = {};
+    ventasSuc.forEach(v => {
+      sucursalesMap[v.gusto_id] = {
+        unidades_sucursales: Number(v.unidades_sucursales),
+        total_sucursales: Number(v.total_sucursales),
+      };
+    });
+
     // --- Ventas mayoristas del período ---
     // Se cobran en dólares. Los pedidos que quedaron sin tipo de cambio cargado
     // se valorizan con el del pedido confirmado más cercano en el tiempo: el
@@ -331,6 +359,9 @@ router.get("/costos-central", authenticate, async (req, res) => {
       const may = mayoristaMap[r.gusto_id] || {
         unidades_mayorista: 0, total_mayorista: 0, tc_estimado: false,
       };
+      const suc = sucursalesMap[r.gusto_id] || {
+        unidades_sucursales: 0, total_sucursales: 0,
+      };
 
       const margen_unitario = (precio_venta != null && costo_prom != null)
         ? precio_venta - costo_prom
@@ -365,9 +396,15 @@ router.get("/costos-central", authenticate, async (req, res) => {
         unidades_mayorista: may.unidades_mayorista,
         total_mayorista: Number(may.total_mayorista.toFixed(2)),
         tc_estimado: may.tc_estimado,
-        // Los dos canales juntos: es lo que hay que comparar contra el costo
-        unidades_totales: v.unidades_vendidas + may.unidades_mayorista,
-        total_facturado: Number((v.total_vendido + may.total_mayorista).toFixed(2)),
+        // Sucursales (lo que le rinden a Central)
+        unidades_sucursales: suc.unidades_sucursales,
+        total_sucursales: Number(suc.total_sucursales.toFixed(2)),
+        // Los tres canales juntos: es lo que hay que comparar contra el costo
+        unidades_totales:
+          v.unidades_vendidas + may.unidades_mayorista + suc.unidades_sucursales,
+        total_facturado: Number(
+          (v.total_vendido + may.total_mayorista + suc.total_sucursales).toFixed(2)
+        ),
       };
     });
 
@@ -376,13 +413,15 @@ router.get("/costos-central", authenticate, async (req, res) => {
       costo_total: Number(resultado.reduce((s, r) => s + r.costo_total, 0).toFixed(2)),
       total_vendido: Number(resultado.reduce((s, r) => s + r.total_vendido, 0).toFixed(2)),
       total_mayorista: Number(resultado.reduce((s, r) => s + r.total_mayorista, 0).toFixed(2)),
+      total_sucursales: Number(resultado.reduce((s, r) => s + r.total_sucursales, 0).toFixed(2)),
       unidades_repuestas: resultado.reduce((s, r) => s + r.unidades_repuestas, 0),
       unidades_vendidas: resultado.reduce((s, r) => s + r.unidades_vendidas, 0),
       unidades_mayorista: resultado.reduce((s, r) => s + r.unidades_mayorista, 0),
+      unidades_sucursales: resultado.reduce((s, r) => s + r.unidades_sucursales, 0),
     };
-    // La facturación real es la suma de los dos canales
+    // La facturación real de Central es la suma de los tres canales
     totales.total_facturado = Number(
-      (totales.total_vendido + totales.total_mayorista).toFixed(2)
+      (totales.total_vendido + totales.total_mayorista + totales.total_sucursales).toFixed(2)
     );
     totales.ganancia_estimada = Number((totales.total_facturado - totales.costo_total).toFixed(2));
     totales.margen_pct = totales.costo_total > 0
