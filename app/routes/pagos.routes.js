@@ -694,12 +694,16 @@ router.post("/pagos/comprobante", authenticate, async (req, res) => {
       if (Number(datos.confianza) < 0.7) dudas.push("lectura dudosa");
       if (datos.fecha_asumida) dudas.push("sin fecha en el comprobante");
 
+      // dd/mm/aaaa, que es como se lee acá
+      const [aa, mm, dd] = String(datos.fecha).split("-");
+      const fechaLegible = dd && mm && aa ? `${dd}/${mm}/${aa}` : datos.fecha;
+
       avisarTelegram(
         [
           "Nuevo comprobante para aprobar",
           `${vendId ? "Vendedor" : "Sucursal"}: ${quien?.nombre || "?"}`,
           `Monto: $${monto}`,
-          `Fecha: ${datos.fecha}`,
+          `Fecha: ${fechaLegible}`,
           `Metodo: ${metodoNorm}`,
           datos.referencia ? `Operacion: ${datos.referencia}` : null,
           dudas.length ? `Revisar: ${dudas.join(", ")}` : null,
