@@ -283,6 +283,43 @@ router.get("/costos-central", authenticate, async (req, res) => {
     const ventasMap = {};
     ventas.forEach(v => { ventasMap[v.gusto_id] = { unidades_vendidas: Number(v.unidades_vendidas), total_vendido: Number(v.total_vendido) }; });
 
+    // --- Ventas mayoristas del período ---
+    // Se cobran en dólares. Los pedidos que quedaron sin tipo de cambio cargado
+    // se valorizan con el del pedido confirmado más cercano en el tiempo: el
+    // dólar se movió de 1490 a 1600 en el período, así que usar uno fijo
+    // deformaría los meses viejos. No se toca la base, se calcula al consultar.
+    let whereMay = "pm.estado = 'confirmado' AND pm.sucursal_id = ?";
+    const paramsMay = [CENTRAL_ID];
+    if (desde) { whereMay += " AND DATE(pm.fecha_creacion) >= ?"; paramsMay.push(desde); }
+    if (hasta) { whereMay += " AND DATE(pm.fecha_creacion) <= ?"; paramsMay.push(hasta); }
+
+    const [mayorista] = await pool.promise().query(`
+      SELECT
+        pmi.gusto_id,
+        SUM(pmi.cantidad) AS unidades_mayorista,
+        SUM(pmi.cantidad * pmi.precio_usd * COALESCE(NULLIF(pm.tipo_cambio, 0), (
+          SELECT pm2.tipo_cambio
+          FROM pedidos_mayoristas pm2
+          WHERE pm2.estado = 'confirmado' AND pm2.tipo_cambio > 0
+          ORDER BY ABS(DATEDIFF(pm2.fecha_creacion, pm.fecha_creacion))
+          LIMIT 1
+        ), 0)) AS total_mayorista,
+        SUM(CASE WHEN pm.tipo_cambio IS NULL OR pm.tipo_cambio = 0 THEN 1 ELSE 0 END) AS items_tc_estimado
+      FROM pedidos_mayoristas pm
+      JOIN pedido_mayorista_items pmi ON pmi.pedido_id = pm.id
+      WHERE ${whereMay}
+      GROUP BY pmi.gusto_id
+    `, paramsMay);
+
+    const mayoristaMap = {};
+    mayorista.forEach(m => {
+      mayoristaMap[m.gusto_id] = {
+        unidades_mayorista: Number(m.unidades_mayorista),
+        total_mayorista: Number(m.total_mayorista),
+        tc_estimado: Number(m.items_tc_estimado) > 0,
+      };
+    });
+
     // --- Combinar ---
     const resultado = reposiciones.map(r => {
       const precio_venta = precioMap[r.gusto_id]?.precio_venta ?? null;
@@ -291,6 +328,9 @@ router.get("/costos-central", authenticate, async (req, res) => {
       const costo_total  = Number(r.costo_total);
       const unidades_repuestas = Number(r.unidades_repuestas);
       const v = ventasMap[r.gusto_id] || { unidades_vendidas: 0, total_vendido: 0 };
+      const may = mayoristaMap[r.gusto_id] || {
+        unidades_mayorista: 0, total_mayorista: 0, tc_estimado: false,
+      };
 
       const margen_unitario = (precio_venta != null && costo_prom != null)
         ? precio_venta - costo_prom
@@ -318,8 +358,16 @@ router.get("/costos-central", authenticate, async (req, res) => {
         stock_actual,
         margen_unitario: margen_unitario != null ? Number(margen_unitario.toFixed(2)) : null,
         margen_pct: margen_pct != null ? Number(margen_pct.toFixed(1)) : null,
+        // Ventas comunes
         unidades_vendidas: v.unidades_vendidas,
         total_vendido: Number(v.total_vendido.toFixed(2)),
+        // Mayorista
+        unidades_mayorista: may.unidades_mayorista,
+        total_mayorista: Number(may.total_mayorista.toFixed(2)),
+        tc_estimado: may.tc_estimado,
+        // Los dos canales juntos: es lo que hay que comparar contra el costo
+        unidades_totales: v.unidades_vendidas + may.unidades_mayorista,
+        total_facturado: Number((v.total_vendido + may.total_mayorista).toFixed(2)),
       };
     });
 
@@ -327,10 +375,16 @@ router.get("/costos-central", authenticate, async (req, res) => {
     const totales = {
       costo_total: Number(resultado.reduce((s, r) => s + r.costo_total, 0).toFixed(2)),
       total_vendido: Number(resultado.reduce((s, r) => s + r.total_vendido, 0).toFixed(2)),
+      total_mayorista: Number(resultado.reduce((s, r) => s + r.total_mayorista, 0).toFixed(2)),
       unidades_repuestas: resultado.reduce((s, r) => s + r.unidades_repuestas, 0),
       unidades_vendidas: resultado.reduce((s, r) => s + r.unidades_vendidas, 0),
+      unidades_mayorista: resultado.reduce((s, r) => s + r.unidades_mayorista, 0),
     };
-    totales.ganancia_estimada = Number((totales.total_vendido - totales.costo_total).toFixed(2));
+    // La facturación real es la suma de los dos canales
+    totales.total_facturado = Number(
+      (totales.total_vendido + totales.total_mayorista).toFixed(2)
+    );
+    totales.ganancia_estimada = Number((totales.total_facturado - totales.costo_total).toFixed(2));
     totales.margen_pct = totales.costo_total > 0
       ? Number(((totales.ganancia_estimada / totales.costo_total) * 100).toFixed(1))
       : null;
