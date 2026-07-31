@@ -342,4 +342,59 @@ router.get("/costos-central", authenticate, async (req, res) => {
   }
 });
 
+/**
+ * PATCH /costos-central/:gustoId
+ * Corrige el costo de las reposiciones de Central de un sabor.
+ * Body: { precio_costo, modo: "faltantes" | "todas", desde?, hasta? }
+ *
+ *   faltantes -> solo completa las que no tienen costo (te lo olvidaste)
+ *   todas     -> pisa el costo de todas las del período (estaba mal)
+ *
+ * El rango de fechas es el mismo que se está viendo en pantalla, así nunca se
+ * modifica algo que el admin no tiene a la vista. Solo admin.
+ */
+router.patch("/costos-central/:gustoId", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") {
+    return res.status(403).json({ error: "Acceso denegado" });
+  }
+
+  const gustoId = Number(req.params.gustoId);
+  const { precio_costo, modo = "faltantes", desde, hasta } = req.body || {};
+  const costo = Number(precio_costo);
+
+  if (!gustoId) return res.status(400).json({ error: "Sabor inválido" });
+  if (!Number.isFinite(costo) || costo <= 0) {
+    return res.status(400).json({ error: "El costo tiene que ser mayor a cero" });
+  }
+  if (!["faltantes", "todas"].includes(modo)) {
+    return res.status(400).json({ error: "Modo inválido" });
+  }
+
+  try {
+    let where = "sucursal_id = ? AND gusto_id = ?";
+    const params = [CENTRAL_ID, gustoId];
+    if (desde) { where += " AND DATE(fecha) >= ?"; params.push(desde); }
+    if (hasta) { where += " AND DATE(fecha) <= ?"; params.push(hasta); }
+    if (modo === "faltantes") where += " AND precio_costo IS NULL";
+
+    const [r] = await pool.promise().query(
+      `UPDATE reposiciones SET precio_costo = ? WHERE ${where}`,
+      [costo, ...params]
+    );
+
+    if (!r.affectedRows) {
+      return res.status(404).json({
+        error: modo === "faltantes"
+          ? "Ese sabor ya tiene el costo cargado en todas sus reposiciones"
+          : "No hay reposiciones de ese sabor en el período",
+      });
+    }
+
+    res.json({ ok: true, actualizadas: r.affectedRows });
+  } catch (e) {
+    console.error("❌ Error en PATCH /costos-central:", e);
+    res.status(500).json({ error: "Error al actualizar el costo" });
+  }
+});
+
 module.exports = router;
