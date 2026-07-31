@@ -283,6 +283,29 @@ router.get("/costos-central", authenticate, async (req, res) => {
     const ventasMap = {};
     ventas.forEach(v => { ventasMap[v.gusto_id] = { unidades_vendidas: Number(v.unidades_vendidas), total_vendido: Number(v.total_vendido) }; });
 
+    // --- Costo unitario histórico por sabor ---
+    // Para el margen real hay que comparar contra el costo de LO QUE SE VENDIÓ,
+    // no contra lo que se compró en el mes: la mercadería que entra en julio se
+    // vende en agosto. Se usa el promedio ponderado de todas las reposiciones
+    // hasta la fecha de corte, así el margen de un mes no se recalcula con
+    // compras posteriores.
+    let whereCosto = "sucursal_id = ? AND precio_costo IS NOT NULL";
+    const paramsCosto = [CENTRAL_ID];
+    if (hasta) { whereCosto += " AND DATE(fecha) <= ?"; paramsCosto.push(hasta); }
+
+    const [costosUnit] = await pool.promise().query(`
+      SELECT gusto_id,
+        SUM(cantidad_repuesta * precio_costo) / NULLIF(SUM(cantidad_repuesta), 0) AS costo_unit
+      FROM reposiciones
+      WHERE ${whereCosto}
+      GROUP BY gusto_id
+    `, paramsCosto);
+    const costoUnitMap = {};
+    costosUnit.forEach(x => {
+      const cu = Number(x.costo_unit);
+      if (cu > 0) costoUnitMap[x.gusto_id] = cu;
+    });
+
     // --- Ventas de las sucursales ---
     // Central compra toda la mercadería y la reparte; lo que las sucursales
     // venden se lo rinden a Central, así que es ingreso suyo. El costo ya está
@@ -374,6 +397,18 @@ router.get("/costos-central", authenticate, async (req, res) => {
       // Si no todas las unidades tienen costo, el promedio es parcial — lo indicamos
       const costo_prom_parcial = unidades_con_costo < unidades_repuestas;
 
+      // --- Margen real: lo vendido contra el costo de esas mismas unidades ---
+      const unidades_totales =
+        v.unidades_vendidas + may.unidades_mayorista + suc.unidades_sucursales;
+      const facturado =
+        v.total_vendido + may.total_mayorista + suc.total_sucursales;
+
+      const costoUnit = costoUnitMap[r.gusto_id] ?? null;
+      const costoVendido = costoUnit != null ? costoUnit * unidades_totales : null;
+      const gananciaReal = costoVendido != null ? facturado - costoVendido : null;
+      const margenRealPct =
+        costoVendido > 0 ? (gananciaReal / costoVendido) * 100 : null;
+
       return {
         gusto_id: r.gusto_id,
         producto: r.producto,
@@ -400,11 +435,13 @@ router.get("/costos-central", authenticate, async (req, res) => {
         unidades_sucursales: suc.unidades_sucursales,
         total_sucursales: Number(suc.total_sucursales.toFixed(2)),
         // Los tres canales juntos: es lo que hay que comparar contra el costo
-        unidades_totales:
-          v.unidades_vendidas + may.unidades_mayorista + suc.unidades_sucursales,
-        total_facturado: Number(
-          (v.total_vendido + may.total_mayorista + suc.total_sucursales).toFixed(2)
-        ),
+        unidades_totales,
+        total_facturado: Number(facturado.toFixed(2)),
+        // Costo de lo que efectivamente se vendió, y el margen real que dejó
+        costo_unit: costoUnit != null ? Number(costoUnit.toFixed(2)) : null,
+        costo_vendido: costoVendido != null ? Number(costoVendido.toFixed(2)) : null,
+        ganancia_real: gananciaReal != null ? Number(gananciaReal.toFixed(2)) : null,
+        margen_real_pct: margenRealPct != null ? Number(margenRealPct.toFixed(1)) : null,
       };
     });
 
@@ -422,6 +459,29 @@ router.get("/costos-central", authenticate, async (req, res) => {
     // La facturación real de Central es la suma de los tres canales
     totales.total_facturado = Number(
       (totales.total_vendido + totales.total_mayorista + totales.total_sucursales).toFixed(2)
+    );
+    totales.unidades_totales = resultado.reduce((s, r) => s + r.unidades_totales, 0);
+
+    // --- Margen real ---
+    // Solo entran las filas cuyo sabor tiene costo conocido: si sumáramos las
+    // otras estaríamos contando su facturación con costo cero e inflando el
+    // margen. Por eso también se informa cuánto quedó afuera.
+    const conCosto = resultado.filter(r => r.costo_vendido != null);
+    totales.costo_vendido = Number(
+      conCosto.reduce((s, r) => s + r.costo_vendido, 0).toFixed(2)
+    );
+    totales.facturado_con_costo = Number(
+      conCosto.reduce((s, r) => s + r.total_facturado, 0).toFixed(2)
+    );
+    totales.ganancia_real = Number(
+      (totales.facturado_con_costo - totales.costo_vendido).toFixed(2)
+    );
+    totales.margen_real_pct = totales.costo_vendido > 0
+      ? Number(((totales.ganancia_real / totales.costo_vendido) * 100).toFixed(1))
+      : null;
+    // Facturación de sabores sin costo cargado: no entra en el margen real
+    totales.facturado_sin_costo = Number(
+      (totales.total_facturado - totales.facturado_con_costo).toFixed(2)
     );
     totales.ganancia_estimada = Number((totales.total_facturado - totales.costo_total).toFixed(2));
     totales.margen_pct = totales.costo_total > 0
