@@ -527,22 +527,53 @@ router.patch("/pagos/:id/revisar", authenticate, async (req, res) => {
 /* ----------------------- Comprobante por foto ----------------------- */
 
 // === POST /pagos/comprobante
-// La sucursal (o el admin) sube la foto de un comprobante. Se lee con Claude
-// Vision, se deduplica y queda pendiente de aprobación del admin.
+// La sucursal, el vendedor (o el admin en nombre de cualquiera) sube la foto de
+// un comprobante. Se lee con Claude Vision, se deduplica y queda pendiente de
+// aprobación del admin.
 router.post("/pagos/comprobante", authenticate, async (req, res) => {
   const conn = await pool.promise().getConnection();
   try {
     const { rol, sucursalId, id: userId } = req.user || {};
-    const { imagen, mime, sucursal_id: sucursalBody } = req.body || {};
+    const {
+      imagen,
+      mime,
+      sucursal_id: sucursalBody,
+      vendedor_id: vendedorBody,
+    } = req.body || {};
 
     if (!imagen) {
       return res.status(400).json({ error: "Falta la imagen del comprobante" });
     }
 
-    // La sucursal solo puede cargar para sí misma; el admin elige a cuál
-    const sucId = rol === "admin" ? Number(sucursalBody) || null : sucursalId;
-    if (!sucId) {
-      return res.status(400).json({ error: "No se pudo determinar la sucursal" });
+    // Cada uno carga contra su propia cuenta; el admin elige a nombre de quién.
+    // Un pago es de sucursal o de vendedor, nunca de los dos (así lo registra
+    // el resto del sistema: los de vendedor van con sucursal_id en NULL).
+    let sucId = null;
+    let vendId = null;
+
+    if (rol === "admin") {
+      vendId = Number(vendedorBody) || null;
+      sucId = vendId ? null : Number(sucursalBody) || null;
+    } else if (rol === "vendedor") {
+      vendId = userId;
+    } else {
+      sucId = sucursalId;
+    }
+
+    if (!sucId && !vendId) {
+      return res
+        .status(400)
+        .json({ error: "No se pudo determinar la sucursal ni el vendedor" });
+    }
+
+    if (vendId) {
+      const [[vendedor]] = await conn.query(
+        "SELECT id FROM usuarios WHERE id = ? AND rol = 'vendedor'",
+        [vendId]
+      );
+      if (!vendedor) {
+        return res.status(404).json({ error: "Vendedor no encontrado" });
+      }
     }
 
     const base64 = String(imagen).replace(/^data:[^;]+;base64,/, "");
@@ -584,10 +615,12 @@ router.post("/pagos/comprobante", authenticate, async (req, res) => {
     };
 
     // --- Deduplicación (misma lógica que /pagos/ingresar-ocr) ---
+    // Cuando hay número de operación el hash lo ignora, así que un mismo
+    // comprobante tampoco puede cargarse de los dos lados a la vez.
     const { hash: hash_unico } = buildHash({
       montoNum,
       fechaPago,
-      sucursal_id: sucId,
+      sucursal_id: sucId || `v${vendId}`,
       referencia: datos.referencia,
       ocr_text: JSON.stringify(datos),
       parser_json: parserJson,
@@ -610,9 +643,9 @@ router.post("/pagos/comprobante", authenticate, async (req, res) => {
     await conn.beginTransaction();
 
     const [ins] = await conn.query(
-      `INSERT INTO pagos (sucursal_id, metodo, monto, fecha, referencia, estado, hash_unico)
-       VALUES (?, ?, ?, ?, ?, 'needs_review', ?)`,
-      [sucId, metodoNorm, montoNum, fechaPago, datos.referencia || null, hash_unico]
+      `INSERT INTO pagos (sucursal_id, vendedor_id, metodo, monto, fecha, referencia, estado, hash_unico)
+       VALUES (?, ?, ?, ?, ?, ?, 'needs_review', ?)`,
+      [sucId, vendId, metodoNorm, montoNum, fechaPago, datos.referencia || null, hash_unico]
     );
     const pago_id = ins.insertId;
 
@@ -655,16 +688,21 @@ router.post("/pagos/comprobante", authenticate, async (req, res) => {
 // === GET /pagos/:id/comprobante — devuelve la imagen guardada
 router.get("/pagos/:id/comprobante", authenticate, async (req, res) => {
   try {
-    const { rol, sucursalId } = req.user;
+    const { rol, sucursalId, id: userId } = req.user;
     const [[row]] = await pool.promise().query(
-      `SELECT c.imagen_base64, c.mime, p.sucursal_id
+      `SELECT c.imagen_base64, c.mime, p.sucursal_id, p.vendedor_id
        FROM pagos_comprobantes c
        JOIN pagos p ON p.id = c.pago_id
        WHERE c.pago_id = ? ORDER BY c.id DESC LIMIT 1`,
       [req.params.id]
     );
     if (!row) return res.status(404).json({ error: "Sin comprobante" });
-    if (rol !== "admin" && row.sucursal_id !== sucursalId) {
+
+    const propio =
+      rol === "admin" ||
+      (rol === "vendedor" && row.vendedor_id === userId) ||
+      (rol !== "vendedor" && row.vendedor_id === null && row.sucursal_id === sucursalId);
+    if (!propio) {
       return res.status(403).json({ error: "Acceso denegado" });
     }
     res.json({ imagen: `data:${row.mime};base64,${row.imagen_base64}` });
@@ -714,21 +752,28 @@ router.delete("/pagos/:id/rechazar", authenticate, async (req, res) => {
 // === GET /pagos/pendientes
 router.get("/pagos/pendientes", authenticate, async (req, res) => {
   try {
-    const { rol, sucursalId } = req.user;
+    const { rol, sucursalId, id: userId } = req.user;
     let sql = `
       SELECT p.*, s.nombre AS sucursal,
+        u.email AS vendedor,
         r.ocr_confianza, r.parser_json,
         (SELECT COUNT(*) FROM pagos_comprobantes c WHERE c.pago_id = p.id) AS tiene_imagen
       FROM pagos p
       LEFT JOIN sucursales s ON s.id = p.sucursal_id
+      LEFT JOIN usuarios u ON u.id = p.vendedor_id
       LEFT JOIN pagos_raw_ocr r ON r.id = (
         SELECT MAX(r2.id) FROM pagos_raw_ocr r2 WHERE r2.pago_id = p.id
       )
       WHERE p.estado = 'needs_review'
     `;
     const params = [];
-    if (rol !== "admin") {
-      sql += " AND (p.sucursal_id = ? OR p.sucursal_id IS NULL)";
+    if (rol === "vendedor") {
+      sql += " AND p.vendedor_id = ?";
+      params.push(userId);
+    } else if (rol !== "admin") {
+      // Solo los de su sucursal. Los de vendedor van con sucursal_id NULL, así
+      // que hay que excluirlos explícitamente para no filtrarlos de más.
+      sql += " AND p.sucursal_id = ? AND p.vendedor_id IS NULL";
       params.push(sucursalId);
     }
     sql += " ORDER BY p.fecha DESC";
