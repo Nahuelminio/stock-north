@@ -65,6 +65,15 @@ function extractStrongRefs({ referencia, ocr_text, parser_json }) {
   const mTx = blob.match(/ID\s+de\s+la\s+transacci[oó]n[:\s]*([A-Z0-9\-]+)/i);
   if (mTx) out.txid = onlyAN(mTx[1]);
 
+  // Número de operación ya extraído (Mercado Pago, Galicia, etc. lo rotulan
+  // de mil formas distintas). Es un ID fuerte: identifica la transferencia sin
+  // importar qué sucursal la suba, así que dos sucursales no pueden acreditarse
+  // el mismo comprobante.
+  if (!out.coelsa && !out.txid && referencia) {
+    const oper = onlyAN(referencia);
+    if (oper.length >= 6) out.operacion = oper;
+  }
+
   // Ayuda para heurística
   const mCbu = blob.match(/\bCBU\b[:\s]*([0-9.\s]+)/i);
   if (mCbu) out.cbu_tail = lastDigits(mCbu[1], 12);
@@ -90,6 +99,8 @@ function buildHash({
   if (strong.coelsa)
     return { hash: sha256(`COELSA|${strong.coelsa}`), mode: "COELSA" };
   if (strong.txid) return { hash: sha256(`TXID|${strong.txid}`), mode: "TXID" };
+  if (strong.operacion)
+    return { hash: sha256(`OPER|${strong.operacion}`), mode: "OPER" };
 
   // Heurística: ventana de 10 minutos + huella del pagador
   const bucket = Math.floor(+fechaPago / (10 * 60 * 1000));
