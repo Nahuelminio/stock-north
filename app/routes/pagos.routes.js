@@ -156,9 +156,14 @@ router.get("/historial-pagos", authenticate, async (req, res) => {
   const { fecha_inicio, fecha_fin } = req.query;
   const { sucursalId, rol } = req.user;
   try {
+    // Si el pago tiene comprobante adjunto es porque lo cargó la sucursal por
+    // foto; si no, lo registró el admin a mano.
     let query = `
       SELECT
-        p.id, s.nombre AS sucursal, p.metodo, p.monto, p.fecha, p.estado
+        p.id, s.nombre AS sucursal, p.metodo, p.monto, p.fecha, p.estado,
+        p.referencia,
+        (SELECT COUNT(*) FROM pagos_comprobantes c WHERE c.pago_id = p.id) > 0
+          AS por_comprobante
       FROM pagos p
       JOIN sucursales s ON p.sucursal_id = s.id
       WHERE p.estado = 'ok'
