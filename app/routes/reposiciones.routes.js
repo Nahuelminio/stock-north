@@ -550,6 +550,64 @@ router.patch("/costos-central/:gustoId", authenticate, async (req, res) => {
   }
 });
 
+/**
+ * PATCH /costos-central/:gustoId/precio
+ * Corrige el precio de venta de un sabor en la Central.
+ * Body: { precio, todas_las_sucursales?: boolean }
+ *
+ * Si el sabor todavía no tiene fila de stock en Central se crea en cero: el
+ * precio se puede definir antes de que llegue mercadería. Solo admin.
+ */
+router.patch("/costos-central/:gustoId/precio", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") {
+    return res.status(403).json({ error: "Acceso denegado" });
+  }
+
+  const gustoId = Number(req.params.gustoId);
+  const { precio, todas_las_sucursales = false } = req.body || {};
+  const monto = Number(precio);
+
+  if (!gustoId) return res.status(400).json({ error: "Sabor inválido" });
+  if (!Number.isFinite(monto) || monto <= 0) {
+    return res.status(400).json({ error: "El precio tiene que ser mayor a cero" });
+  }
+
+  try {
+    const [[gusto]] = await pool.promise().query(
+      "SELECT id FROM gustos WHERE id = ?", [gustoId]
+    );
+    if (!gusto) return res.status(404).json({ error: "Sabor no encontrado" });
+
+    if (todas_las_sucursales) {
+      // Solo donde ya existe la fila: no creamos stock en sucursales que
+      // nunca tuvieron este sabor.
+      const [r] = await pool.promise().query(
+        "UPDATE stock SET precio = ? WHERE gusto_id = ?",
+        [monto, gustoId]
+      );
+      // Central igual tiene que quedar con precio, exista o no la fila
+      await pool.promise().query(
+        `INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio)
+         VALUES (?, ?, 0, ?)
+         ON DUPLICATE KEY UPDATE precio = VALUES(precio)`,
+        [gustoId, CENTRAL_ID, monto]
+      );
+      return res.json({ ok: true, actualizadas: r.affectedRows, alcance: "todas" });
+    }
+
+    const [r] = await pool.promise().query(
+      `INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio)
+       VALUES (?, ?, 0, ?)
+       ON DUPLICATE KEY UPDATE precio = VALUES(precio)`,
+      [gustoId, CENTRAL_ID, monto]
+    );
+    res.json({ ok: true, actualizadas: 1, creada: r.affectedRows === 1, alcance: "central" });
+  } catch (e) {
+    console.error("❌ Error en PATCH /costos-central/:id/precio:", e);
+    res.status(500).json({ error: "Error al actualizar el precio" });
+  }
+});
+
 module.exports = router;
 
 // redeploy
