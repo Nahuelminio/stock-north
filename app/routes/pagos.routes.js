@@ -579,6 +579,8 @@ router.post("/pagos/comprobante", authenticate, async (req, res) => {
       destinatario: datos.destinatario || null,
       cbu_cvu: datos.cbu_cvu || null,
       alias: datos.destinatario || null,
+      // true cuando el comprobante no traía fecha legible y la puso el servidor
+      fecha_asumida: !!datos.fecha_asumida,
     };
 
     // --- Deduplicación (misma lógica que /pagos/ingresar-ocr) ---
@@ -634,6 +636,7 @@ router.post("/pagos/comprobante", authenticate, async (req, res) => {
       leido: {
         monto: montoNum,
         fecha: datos.fecha,
+        fecha_asumida: !!datos.fecha_asumida,
         metodo: metodoNorm,
         referencia: datos.referencia || null,
         destinatario: datos.destinatario || null,

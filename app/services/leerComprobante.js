@@ -14,7 +14,8 @@ const SCHEMA = {
     },
     fecha: {
       type: "string",
-      description: "Fecha de la operación en formato YYYY-MM-DD. Si no figura, la fecha de hoy.",
+      description:
+        "Fecha de la operación en formato YYYY-MM-DD. Cadena vacía si no figura o no se lee: no la inventes, el servidor la completa.",
     },
     metodo: {
       type: "string",
@@ -61,20 +62,27 @@ const SCHEMA = {
   additionalProperties: false,
 };
 
-const PROMPT = `Extraé los datos de este comprobante de pago argentino.
+function prompt(hoy) {
+  return `Extraé los datos de este comprobante de pago argentino.
+
+Hoy es ${hoy}. Usalo solo para interpretar fechas ambiguas (por ejemplo, un
+comprobante que dice "ayer" o que muestra el día sin el año).
 
 Reglas:
 - El monto va sin separador de miles ni símbolo: 150000.50, no "$150.000,50".
 - En Argentina el punto separa miles y la coma separa decimales. "1.500.000,00" son un millón y medio de pesos.
 - Si ves varios montos, tomá el que corresponde al total transferido, no comisiones ni saldos.
 - Si la imagen no es un comprobante de pago, poné es_comprobante en false y el resto en cero o cadena vacía.
-- Si algún dato no está o no se lee, dejalo vacío y bajá la confianza. No inventes.`;
+- Si algún dato no está o no se lee, dejalo vacío y bajá la confianza. Nunca inventes un valor de relleno.`;
+}
 
 /**
  * @param {string} base64  imagen sin el prefijo data:
  * @param {string} mime    'image/jpeg' | 'image/png' | ...
  */
 async function leerComprobante(base64, mime = "image/jpeg") {
+  const hoy = new Date().toISOString().slice(0, 10);
+
   const response = await client.messages.create({
     model: "claude-opus-5",
     max_tokens: 16000,
@@ -88,7 +96,7 @@ async function leerComprobante(base64, mime = "image/jpeg") {
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: mime, data: base64 } },
-          { type: "text", text: PROMPT },
+          { type: "text", text: prompt(hoy) },
         ],
       },
     ],
@@ -101,7 +109,23 @@ async function leerComprobante(base64, mime = "image/jpeg") {
   const texto = response.content.find((b) => b.type === "text")?.text;
   if (!texto) throw new Error("Respuesta vacía al leer el comprobante");
 
-  return JSON.parse(texto);
+  const datos = JSON.parse(texto);
+
+  // El modelo no puede saber qué día es hoy: si no leyó la fecha, o devolvió
+  // una fuera de rango razonable, la completamos acá. Un comprobante con fecha
+  // vieja se ordena al fondo del historial y en la práctica desaparece.
+  const fecha = new Date(datos.fecha + "T12:00:00");
+  const diasDeDiferencia = (Date.now() - fecha.getTime()) / 86400000;
+  const razonable =
+    datos.fecha && !isNaN(fecha.getTime()) && diasDeDiferencia > -2 && diasDeDiferencia < 400;
+
+  if (!razonable) {
+    datos.fecha = hoy;
+    datos.fecha_asumida = true;           // la revisión lo marca para que la corrijan
+    datos.confianza = Math.min(Number(datos.confianza) || 0, 0.6);
+  }
+
+  return datos;
 }
 
 module.exports = { leerComprobante };
