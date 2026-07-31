@@ -477,4 +477,61 @@ router.get("/deuda-por-sucursal", authenticate, async (req, res) => {
   }
 });
 
+// GET /historial-export — todas las ventas sin límite de paginación (solo admin)
+router.get("/historial-export", authenticate, async (req, res) => {
+  const { rol } = req.user;
+  if (rol !== "admin") return res.status(403).json({ error: "Solo administradores" });
+
+  const { sucursal_id, desde, hasta } = req.query;
+
+  try {
+    const where = [];
+    const params = [];
+
+    if (sucursal_id) {
+      where.push("v.sucursal_id = ?");
+      params.push(Number(sucursal_id));
+    }
+    if (desde) {
+      where.push("DATE(v.fecha) >= ?");
+      params.push(desde);
+    }
+    if (hasta) {
+      where.push("DATE(v.fecha) <= ?");
+      params.push(hasta);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const [rows] = await pool.promise().query(
+      `SELECT
+        v.id,
+        DATE_FORMAT(v.fecha, '%Y-%m-%d') AS fecha,
+        TIME_FORMAT(v.fecha, '%H:%i')    AS hora,
+        s.nombre  AS sucursal,
+        p.nombre  AS producto,
+        g.nombre  AS gusto,
+        v.cantidad,
+        COALESCE(v.precio_unitario, st.precio, 0) AS precio_unitario,
+        v.cantidad * COALESCE(v.precio_unitario, st.precio, 0) AS total,
+        p.precio_costo   AS costo_unitario,
+        v.cantidad * p.precio_costo AS costo_total,
+        (v.cantidad * COALESCE(v.precio_unitario, st.precio, 0)) - (v.cantidad * p.precio_costo) AS ganancia
+      FROM ventas v
+      JOIN gustos   g  ON g.id  = v.gusto_id
+      JOIN productos p ON p.id  = g.producto_id
+      JOIN sucursales s ON s.id = v.sucursal_id
+      LEFT JOIN stock st ON st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id
+      ${whereSql}
+      ORDER BY v.fecha DESC`,
+      params
+    );
+
+    res.json(rows);
+  } catch (e) {
+    console.error("❌ Error historial-export:", e);
+    res.status(500).json({ error: "Error al exportar historial" });
+  }
+});
+
 module.exports = router;

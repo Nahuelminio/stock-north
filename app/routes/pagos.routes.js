@@ -146,11 +146,11 @@ router.get("/historial-pagos", authenticate, async (req, res) => {
   const { sucursalId, rol } = req.user;
   try {
     let query = `
-      SELECT 
-        p.id, s.nombre AS sucursal, p.metodo, p.monto, p.fecha
+      SELECT
+        p.id, s.nombre AS sucursal, p.metodo, p.monto, p.fecha, p.estado
       FROM pagos p
       JOIN sucursales s ON p.sucursal_id = s.id
-      WHERE 1=1
+      WHERE p.estado = 'ok'
     `;
     const params = [];
     if (rol !== "admin") {
@@ -188,7 +188,7 @@ router.get("/pagos-por-sucursal", authenticate, async (req, res) => {
     const [result] = await pool.promise().query(`
       SELECT s.id AS sucursal_id, s.nombre AS sucursal, IFNULL(SUM(p.monto), 0) AS total_pagado
       FROM sucursales s
-      LEFT JOIN pagos p ON p.sucursal_id = s.id
+      LEFT JOIN pagos p ON p.sucursal_id = s.id AND p.estado = 'ok'
       GROUP BY s.id, s.nombre
     `);
     res.json(result);
@@ -508,6 +508,197 @@ router.patch("/pagos/:id/revisar", authenticate, async (req, res) => {
   }
 });
 
+/* ----------------------- Comprobante por foto ----------------------- */
+
+// === POST /pagos/comprobante
+// La sucursal (o el admin) sube la foto de un comprobante. Se lee con Claude
+// Vision, se deduplica y queda pendiente de aprobación del admin.
+router.post("/pagos/comprobante", authenticate, async (req, res) => {
+  const conn = await pool.promise().getConnection();
+  try {
+    const { rol, sucursalId, id: userId } = req.user || {};
+    const { imagen, mime, sucursal_id: sucursalBody } = req.body || {};
+
+    if (!imagen) {
+      conn.release();
+      return res.status(400).json({ error: "Falta la imagen del comprobante" });
+    }
+
+    // La sucursal solo puede cargar para sí misma; el admin elige a cuál
+    const sucId = rol === "admin" ? Number(sucursalBody) || null : sucursalId;
+    if (!sucId) {
+      conn.release();
+      return res.status(400).json({ error: "No se pudo determinar la sucursal" });
+    }
+
+    const base64 = String(imagen).replace(/^data:[^;]+;base64,/, "");
+    const mediaType = mime || "image/jpeg";
+
+    // --- Leer el comprobante ---
+    let datos;
+    try {
+      const { leerComprobante } = require("../services/leerComprobante");
+      datos = await leerComprobante(base64, mediaType);
+    } catch (e) {
+      console.error("❌ Error al leer el comprobante:", e);
+      conn.release();
+      return res.status(422).json({
+        error: "No se pudo leer el comprobante. Probá con una foto más nítida.",
+      });
+    }
+
+    if (!datos.es_comprobante) {
+      conn.release();
+      return res.status(422).json({
+        error: "La imagen no parece ser un comprobante de pago.",
+      });
+    }
+
+    const montoNum = Number(datos.monto);
+    if (!montoNum || isNaN(montoNum) || montoNum <= 0) {
+      conn.release();
+      return res.status(422).json({
+        error: "No se pudo leer el monto del comprobante.",
+      });
+    }
+
+    const metodoNorm = normalizarMetodo(datos.metodo);
+    const fechaPago = parseFechaFlexible(datos.fecha);
+    const parserJson = {
+      destinatario: datos.destinatario || null,
+      cbu_cvu: datos.cbu_cvu || null,
+      alias: datos.destinatario || null,
+    };
+
+    // --- Deduplicación (misma lógica que /pagos/ingresar-ocr) ---
+    const { hash: hash_unico } = buildHash({
+      montoNum,
+      fechaPago,
+      sucursal_id: sucId,
+      referencia: datos.referencia,
+      ocr_text: JSON.stringify(datos),
+      parser_json: parserJson,
+    });
+
+    const [dup] = await conn.query(
+      "SELECT id, monto, fecha, estado FROM pagos WHERE hash_unico = ? LIMIT 1",
+      [hash_unico]
+    );
+    if (dup.length) {
+      conn.release();
+      return res.status(409).json({
+        error: "Este comprobante ya fue cargado.",
+        status: "duplicado",
+        pago_id: dup[0].id,
+        pago: dup[0],
+      });
+    }
+
+    // --- Insertar pago + rastro OCR + imagen ---
+    await conn.beginTransaction();
+
+    const [ins] = await conn.query(
+      `INSERT INTO pagos (sucursal_id, metodo, monto, fecha, referencia, estado, hash_unico)
+       VALUES (?, ?, ?, ?, ?, 'needs_review', ?)`,
+      [sucId, metodoNorm, montoNum, fechaPago, datos.referencia || null, hash_unico]
+    );
+    const pago_id = ins.insertId;
+
+    await conn.query(
+      `INSERT INTO pagos_raw_ocr (pago_id, ocr_text, ocr_confianza, parser_json)
+       VALUES (?, ?, ?, ?)`,
+      [pago_id, JSON.stringify(datos), Number(datos.confianza) || 0, JSON.stringify(parserJson)]
+    );
+
+    await conn.query(
+      `INSERT INTO pagos_comprobantes (pago_id, imagen_base64, mime, subido_por)
+       VALUES (?, ?, ?, ?)`,
+      [pago_id, base64, mediaType, userId || null]
+    );
+
+    await conn.commit();
+
+    res.json({
+      status: "pendiente",
+      pago_id,
+      leido: {
+        monto: montoNum,
+        fecha: datos.fecha,
+        metodo: metodoNorm,
+        referencia: datos.referencia || null,
+        destinatario: datos.destinatario || null,
+        confianza: Number(datos.confianza) || 0,
+      },
+    });
+  } catch (error) {
+    try { await conn.rollback(); } catch (_) {}
+    console.error("❌ Error en /pagos/comprobante:", error);
+    res.status(500).json({ error: "Error al procesar el comprobante" });
+  } finally {
+    conn.release();
+  }
+});
+
+// === GET /pagos/:id/comprobante — devuelve la imagen guardada
+router.get("/pagos/:id/comprobante", authenticate, async (req, res) => {
+  try {
+    const { rol, sucursalId } = req.user;
+    const [[row]] = await pool.promise().query(
+      `SELECT c.imagen_base64, c.mime, p.sucursal_id
+       FROM pagos_comprobantes c
+       JOIN pagos p ON p.id = c.pago_id
+       WHERE c.pago_id = ? ORDER BY c.id DESC LIMIT 1`,
+      [req.params.id]
+    );
+    if (!row) return res.status(404).json({ error: "Sin comprobante" });
+    if (rol !== "admin" && row.sucursal_id !== sucursalId) {
+      return res.status(403).json({ error: "Acceso denegado" });
+    }
+    res.json({ imagen: `data:${row.mime};base64,${row.imagen_base64}` });
+  } catch (e) {
+    console.error("❌ Error al obtener comprobante:", e);
+    res.status(500).json({ error: "Error al obtener el comprobante" });
+  }
+});
+
+// === DELETE /pagos/:id/rechazar — descarta un comprobante pendiente (admin)
+router.delete("/pagos/:id/rechazar", authenticate, async (req, res) => {
+  const conn = await pool.promise().getConnection();
+  try {
+    if (req.user?.rol !== "admin") {
+      conn.release();
+      return res.status(403).json({ error: "Sólo admin" });
+    }
+    const [[pago]] = await conn.query("SELECT estado FROM pagos WHERE id = ?", [
+      req.params.id,
+    ]);
+    if (!pago) {
+      conn.release();
+      return res.status(404).json({ error: "Pago no encontrado" });
+    }
+    if (pago.estado !== "needs_review") {
+      conn.release();
+      return res
+        .status(400)
+        .json({ error: "Sólo se pueden rechazar pagos pendientes de revisión" });
+    }
+
+    await conn.beginTransaction();
+    await conn.query("DELETE FROM pagos_comprobantes WHERE pago_id = ?", [req.params.id]);
+    await conn.query("DELETE FROM pagos_raw_ocr WHERE pago_id = ?", [req.params.id]);
+    await conn.query("DELETE FROM pagos WHERE id = ?", [req.params.id]);
+    await conn.commit();
+
+    res.json({ ok: true });
+  } catch (e) {
+    try { await conn.rollback(); } catch (_) {}
+    console.error("❌ Error al rechazar pago:", e);
+    res.status(500).json({ error: "Error al rechazar el pago" });
+  } finally {
+    conn.release();
+  }
+});
+
 /* ----------------------- Pendientes (para UI) ----------------------- */
 
 // === GET /pagos/pendientes
@@ -515,9 +706,14 @@ router.get("/pagos/pendientes", authenticate, async (req, res) => {
   try {
     const { rol, sucursalId } = req.user;
     let sql = `
-      SELECT p.*, s.nombre AS sucursal
+      SELECT p.*, s.nombre AS sucursal,
+        r.ocr_confianza, r.parser_json,
+        (SELECT COUNT(*) FROM pagos_comprobantes c WHERE c.pago_id = p.id) AS tiene_imagen
       FROM pagos p
       LEFT JOIN sucursales s ON s.id = p.sucursal_id
+      LEFT JOIN pagos_raw_ocr r ON r.id = (
+        SELECT MAX(r2.id) FROM pagos_raw_ocr r2 WHERE r2.pago_id = p.id
+      )
       WHERE p.estado = 'needs_review'
     `;
     const params = [];

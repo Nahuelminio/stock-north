@@ -31,7 +31,8 @@ router.get("/", authenticate, soloAdmin, async (req, res) => {
       `SELECT t.*,
          so.nombre AS sucursal_origen,
          sd.nombre AS sucursal_destino,
-         (SELECT COUNT(*) FROM transferencia_stock_items ti WHERE ti.transferencia_id = t.id) AS total_items
+         (SELECT COUNT(*) FROM transferencia_stock_items ti WHERE ti.transferencia_id = t.id) AS total_items,
+         (SELECT COALESCE(SUM(ti2.cantidad),0) FROM transferencia_stock_items ti2 WHERE ti2.transferencia_id = t.id) AS total_unidades
        FROM transferencias_stock t
        JOIN sucursales so ON so.id = t.sucursal_origen_id
        JOIN sucursales sd ON sd.id = t.sucursal_destino_id

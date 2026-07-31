@@ -31,8 +31,9 @@ app.use(
   })
 );
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// 12mb: las fotos de comprobantes viajan en base64 dentro del JSON
+app.use(express.json({ limit: "12mb" }));
+app.use(express.urlencoded({ extended: true, limit: "12mb" }));
 
 // Montaje de rutas
 app.use("/", require("./routes/productos.routes"));
