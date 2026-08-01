@@ -168,7 +168,13 @@ router.get("/shisha/resumen", authenticate, async (req, res) => {
   res.json({ actual: actual[0], anterior: anterior[0], saborTop });
 });
 
-// GET cuenta shisha: total ventas shisha, pagado desde shisha_pagos, deuda
+// GET cuenta shisha: recupero 100% hasta cubrir lo invertido, después 50/50.
+//
+// Trato con Fagu: él vende, cobra el 100% de cada shisha y te lo va pagando.
+// Mientras lo vendido no supera lo invertido (shishas + tabaco + insumos que
+// compraste), toda la venta es deuda suya hacia vos. Una vez que lo vendido
+// supera esa inversión, el excedente se reparte 50/50 — la mitad queda para
+// él, así que deja de ser toda deuda.
 router.get("/shisha/cuenta", authenticate, async (req, res) => {
   const [[totales]] = await pool.promise().query(`
     SELECT COALESCE(SUM(precio_venta), 0) AS total_shisha
@@ -177,19 +183,69 @@ router.get("/shisha/cuenta", authenticate, async (req, res) => {
   const [[pagado]] = await pool.promise().query(`
     SELECT COALESCE(SUM(monto), 0) AS total_pagado FROM shisha_pagos
   `);
+  const [[invertido]] = await pool.promise().query(`
+    SELECT COALESCE(SUM(monto), 0) AS total_invertido FROM shisha_inversiones
+  `);
   const [historial] = await pool.promise().query(`
     SELECT id, monto, metodo, fecha, notas
     FROM shisha_pagos ORDER BY fecha DESC LIMIT 30
   `);
+  const [inversiones] = await pool.promise().query(`
+    SELECT id, monto, descripcion, fecha
+    FROM shisha_inversiones ORDER BY fecha DESC, id DESC
+  `);
 
   const total_shisha = Number(totales.total_shisha);
   const total_pagado = Number(pagado.total_pagado);
+  const total_invertido = Number(invertido.total_invertido);
+
+  // Sin inversión cargada todavía no hay nada que "cubrir": todo sigue siendo
+  // 100% deuda, igual que antes de que existiera este cálculo. El reparto
+  // 50/50 solo arranca una vez que se cargó una inversión y se superó.
+  const recuperado = total_invertido > 0 ? Math.min(total_shisha, total_invertido) : total_shisha;
+  const excedente = total_invertido > 0 ? Math.max(0, total_shisha - total_invertido) : 0;
+  const etapa = total_invertido > 0 && total_shisha >= total_invertido ? "reparto" : "recupero";
+
+  // Deuda que generó cada venta: 100% mientras se recupera la inversión,
+  // 50% del excedente una vez cubierta (la otra mitad es de Fagu, no se la debe).
+  const deuda_generada = recuperado + excedente * 0.5;
+  const ganancia_tuya = excedente * 0.5; // ya cubierta la inversión, tu parte del reparto
+
   res.json({
     total_shisha,
     total_pagado,
-    deuda: Number((total_shisha - total_pagado).toFixed(2)),
+    total_invertido,
+    etapa, // "recupero" | "reparto"
+    falta_para_cubrir: Number(Math.max(0, total_invertido - total_shisha).toFixed(2)),
+    ganancia_tuya: Number(ganancia_tuya.toFixed(2)),
+    deuda: Number((deuda_generada - total_pagado).toFixed(2)),
     historial,
+    inversiones,
   });
+});
+
+// POST registrar una compra/inversión (shishas, tabaco, carbones, etc.)
+router.post("/shisha/inversion", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
+  const { monto, descripcion, fecha } = req.body;
+  const montoNum = Number(monto);
+  if (!montoNum || montoNum <= 0) return res.status(400).json({ error: "Monto inválido" });
+  if (!descripcion || !descripcion.trim()) return res.status(400).json({ error: "Falta la descripción" });
+
+  await pool.promise().query(
+    "INSERT INTO shisha_inversiones (monto, descripcion, fecha, creado_por) VALUES (?, ?, ?, ?)",
+    [montoNum, descripcion.trim(), fecha || new Date().toISOString().slice(0, 10), req.user?.id || null]
+  );
+  res.json({ ok: true });
+});
+
+// DELETE una inversión cargada mal
+router.delete("/shisha/inversion/:id", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
+  const [[i]] = await pool.promise().query("SELECT id FROM shisha_inversiones WHERE id = ?", [req.params.id]);
+  if (!i) return res.status(404).json({ error: "Inversión no encontrada" });
+  await pool.promise().query("DELETE FROM shisha_inversiones WHERE id = ?", [req.params.id]);
+  res.json({ ok: true });
 });
 
 // POST registrar pago de shisha
