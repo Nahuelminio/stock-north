@@ -211,14 +211,23 @@ router.get("/shisha/cuenta", authenticate, async (req, res) => {
   const deuda_generada = recuperado + excedente * 0.5;
   const ganancia_tuya = excedente * 0.5; // ya cubierta la inversión, tu parte del reparto
 
-  res.json({
+  const base = {
     total_shisha,
     total_pagado,
     total_invertido,
     etapa, // "recupero" | "reparto"
     falta_para_cubrir: Number(Math.max(0, total_invertido - total_shisha).toFixed(2)),
-    ganancia_tuya: Number(ganancia_tuya.toFixed(2)),
     deuda: Number((deuda_generada - total_pagado).toFixed(2)),
+  };
+
+  // La sucursal ve el avance del recupero — es lo que define cuándo empieza a
+  // ganar el 50% — y lo que debe. El detalle de cada compra y la ganancia del
+  // dueño quedan solo para el admin.
+  if (req.user?.rol !== "admin") return res.json(base);
+
+  res.json({
+    ...base,
+    ganancia_tuya: Number(ganancia_tuya.toFixed(2)),
     historial,
     inversiones,
   });
