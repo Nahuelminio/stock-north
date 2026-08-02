@@ -168,55 +168,76 @@ router.get("/shisha/resumen", authenticate, async (req, res) => {
   res.json({ actual: actual[0], anterior: anterior[0], saborTop });
 });
 
-// GET cuenta shisha: recupero 100% hasta cubrir lo invertido, después 50/50.
+// GET cuenta shisha: el capital se recupera 100%, después se reparte 50/50.
 //
-// Trato con Fagu: él vende, cobra el 100% de cada shisha y te lo va pagando.
-// Mientras lo vendido no supera lo invertido (shishas + tabaco + insumos que
-// compraste), toda la venta es deuda suya hacia vos. Una vez que lo vendido
-// supera esa inversión, el excedente se reparte 50/50 — la mitad queda para
-// él, así que deja de ser toda deuda.
+// Trato con Fagu: él vende, cobra el 100% de cada shisha y se lo va pagando al
+// dueño. Se separan dos cosas que antes iban juntas:
+//
+//   CAPITAL (shishas, quemadores, pinzas) — se compra una vez. Es el techo a
+//     recuperar. Solo baja, nunca sube.
+//   INSUMOS (tabaco, carbón, aluminio) — se consumen en cada shisha. El costo
+//     de cada venta vuelve al dueño en esa misma venta, porque él lo repuso.
+//
+// Antes todo sumaba al techo, y como el tabaco se repone cada dos meses el
+// techo subía más rápido de lo que las ventas lo bajaban: el 50/50 no llegaba
+// nunca. Ahora lo que recupera el capital es el MARGEN (venta − insumo), y el
+// reparto arranca cuando ese margen acumulado cubre el capital.
 router.get("/shisha/cuenta", authenticate, async (req, res) => {
   const [[totales]] = await pool.promise().query(`
-    SELECT COALESCE(SUM(precio_venta), 0) AS total_shisha
+    SELECT
+      COALESCE(SUM(precio_venta), 0) AS total_shisha,
+      COALESCE(SUM(costo_pesos), 0)  AS total_insumos_consumidos,
+      COALESCE(SUM(ganancia), 0)     AS margen_acumulado
     FROM shisha_ventas WHERE anulada = 0
   `);
   const [[pagado]] = await pool.promise().query(`
     SELECT COALESCE(SUM(monto), 0) AS total_pagado FROM shisha_pagos
   `);
   const [[invertido]] = await pool.promise().query(`
-    SELECT COALESCE(SUM(monto), 0) AS total_invertido FROM shisha_inversiones
+    SELECT
+      COALESCE(SUM(monto), 0) AS total_invertido,
+      COALESCE(SUM(CASE WHEN tipo = 'capital' THEN monto ELSE 0 END), 0) AS total_capital,
+      COALESCE(SUM(CASE WHEN tipo = 'insumo'  THEN monto ELSE 0 END), 0) AS total_insumos_comprados
+    FROM shisha_inversiones
   `);
   const [historial] = await pool.promise().query(`
     SELECT id, monto, metodo, fecha, notas
     FROM shisha_pagos ORDER BY fecha DESC LIMIT 30
   `);
   const [inversiones] = await pool.promise().query(`
-    SELECT id, monto, descripcion, fecha
+    SELECT id, monto, tipo, descripcion, fecha
     FROM shisha_inversiones ORDER BY fecha DESC, id DESC
   `);
 
   const total_shisha = Number(totales.total_shisha);
+  const insumos_consumidos = Number(totales.total_insumos_consumidos);
+  const margen = Number(totales.margen_acumulado);
   const total_pagado = Number(pagado.total_pagado);
   const total_invertido = Number(invertido.total_invertido);
+  const total_capital = Number(invertido.total_capital);
+  const insumos_comprados = Number(invertido.total_insumos_comprados);
 
-  // Sin inversión cargada todavía no hay nada que "cubrir": todo sigue siendo
-  // 100% deuda, igual que antes de que existiera este cálculo. El reparto
-  // 50/50 solo arranca una vez que se cargó una inversión y se superó.
-  const recuperado = total_invertido > 0 ? Math.min(total_shisha, total_invertido) : total_shisha;
-  const excedente = total_invertido > 0 ? Math.max(0, total_shisha - total_invertido) : 0;
-  const etapa = total_invertido > 0 && total_shisha >= total_invertido ? "reparto" : "recupero";
+  // Sin capital cargado no hay nada que cubrir: todo sigue siendo 100% deuda.
+  const capital_recuperado = total_capital > 0 ? Math.min(margen, total_capital) : margen;
+  const excedente = total_capital > 0 ? Math.max(0, margen - total_capital) : 0;
+  const etapa = total_capital > 0 && margen >= total_capital ? "reparto" : "recupero";
 
-  // Deuda que generó cada venta: 100% mientras se recupera la inversión,
-  // 50% del excedente una vez cubierta (la otra mitad es de Fagu, no se la debe).
-  const deuda_generada = recuperado + excedente * 0.5;
-  const ganancia_tuya = excedente * 0.5; // ya cubierta la inversión, tu parte del reparto
+  // Deuda de cada venta: siempre le corresponde al dueño el insumo que repuso.
+  // Del margen, todo mientras se recupera el capital; la mitad una vez cubierto.
+  const deuda_generada = insumos_consumidos + capital_recuperado + excedente * 0.5;
+  const ganancia_tuya = excedente * 0.5;
 
   const base = {
     total_shisha,
     total_pagado,
     total_invertido,
+    total_capital,
+    insumos_comprados,
+    insumos_consumidos: Number(insumos_consumidos.toFixed(2)),
+    margen: Number(margen.toFixed(2)),
+    capital_recuperado: Number(capital_recuperado.toFixed(2)),
     etapa, // "recupero" | "reparto"
-    falta_para_cubrir: Number(Math.max(0, total_invertido - total_shisha).toFixed(2)),
+    falta_para_cubrir: Number(Math.max(0, total_capital - margen).toFixed(2)),
     deuda: Number((deuda_generada - total_pagado).toFixed(2)),
   };
 
@@ -233,17 +254,20 @@ router.get("/shisha/cuenta", authenticate, async (req, res) => {
   });
 });
 
-// POST registrar una compra/inversión (shishas, tabaco, carbones, etc.)
+// POST registrar una compra
+//   tipo "capital" -> shishas, quemadores, pinzas: forma el techo a recuperar
+//   tipo "insumo"  -> tabaco, carbón, aluminio: se repone en cada venta
 router.post("/shisha/inversion", authenticate, async (req, res) => {
   if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
-  const { monto, descripcion, fecha } = req.body;
+  const { monto, descripcion, fecha, tipo = "capital" } = req.body;
   const montoNum = Number(monto);
   if (!montoNum || montoNum <= 0) return res.status(400).json({ error: "Monto inválido" });
   if (!descripcion || !descripcion.trim()) return res.status(400).json({ error: "Falta la descripción" });
+  if (!["capital", "insumo"].includes(tipo)) return res.status(400).json({ error: "Tipo inválido" });
 
   await pool.promise().query(
-    "INSERT INTO shisha_inversiones (monto, descripcion, fecha, creado_por) VALUES (?, ?, ?, ?)",
-    [montoNum, descripcion.trim(), fecha || new Date().toISOString().slice(0, 10), req.user?.id || null]
+    "INSERT INTO shisha_inversiones (monto, tipo, descripcion, fecha, creado_por) VALUES (?, ?, ?, ?, ?)",
+    [montoNum, tipo, descripcion.trim(), fecha || new Date().toISOString().slice(0, 10), req.user?.id || null]
   );
   res.json({ ok: true });
 });
