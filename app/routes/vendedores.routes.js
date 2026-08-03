@@ -446,7 +446,7 @@ router.put("/ventas/:ventaId", authenticate, soloAdmin, async (req, res) => {
 
   try {
     const [[venta]] = await pool.promise().query(
-      "SELECT id, vendedor_id FROM ventas v JOIN usuarios u ON u.id = v.vendedor_id AND u.rol = 'vendedor' WHERE v.id = ?",
+      "SELECT v.id, v.vendedor_id FROM ventas v JOIN usuarios u ON u.id = v.vendedor_id AND u.rol = 'vendedor' WHERE v.id = ?",
       [ventaId]
     );
     if (!venta) return res.status(404).json({ error: "Venta no encontrada" });
