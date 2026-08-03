@@ -23,12 +23,32 @@ router.put("/shisha/config", authenticate, async (req, res) => {
 });
 
 // PUT cargar insumos generales
+//   modo "sumar" (default) -> llegó mercadería, se agrega a lo que hay
+//   modo "fijar"           -> control de stock: queda exactamente lo contado
 router.put("/shisha/insumos", authenticate, async (req, res) => {
-  const { carbones, papeles } = req.body;
-  await pool.promise().query(
-    "UPDATE shisha_insumos SET carbones = carbones + ?, papeles = papeles + ?",
-    [carbones || 0, papeles || 0]
-  );
+  const { carbones, papeles, modo = "sumar" } = req.body;
+  if (!["sumar", "fijar"].includes(modo)) {
+    return res.status(400).json({ error: "Modo inválido" });
+  }
+
+  const nC = Number(carbones) || 0;
+  const nP = Number(papeles) || 0;
+
+  if (modo === "fijar") {
+    if (nC < 0 || nP < 0) return res.status(400).json({ error: "No puede ser negativo" });
+    await pool.promise().query(
+      "UPDATE shisha_insumos SET carbones = ?, papeles = ?",
+      [Math.round(nC), Math.round(nP)]
+    );
+  } else {
+    // Sumar acepta negativos para corregir a mano, pero nunca deja el stock bajo cero
+    await pool.promise().query(
+      `UPDATE shisha_insumos
+       SET carbones = GREATEST(0, carbones + ?), papeles = GREATEST(0, papeles + ?)`,
+      [Math.round(nC), Math.round(nP)]
+    );
+  }
+
   const [rows] = await pool.promise().query("SELECT * FROM shisha_insumos LIMIT 1");
   res.json(rows[0]);
 });
@@ -48,12 +68,29 @@ router.post("/shisha/sabores", authenticate, async (req, res) => {
   res.json(rows);
 });
 
+// modo "sumar" (default) -> llegó tabaco, se agrega
+// modo "fijar"           -> control de stock: queda exactamente lo contado
 router.put("/shisha/sabores/:id/stock", authenticate, async (req, res) => {
-  const { paquetes } = req.body;
-  await pool.promise().query(
-    "UPDATE shisha_sabores SET stock_paquetes = stock_paquetes + ? WHERE id = ?",
-    [paquetes || 0, req.params.id]
-  );
+  const { paquetes, modo = "sumar" } = req.body;
+  if (!["sumar", "fijar"].includes(modo)) {
+    return res.status(400).json({ error: "Modo inválido" });
+  }
+
+  const n = Number(paquetes) || 0;
+
+  if (modo === "fijar") {
+    if (n < 0) return res.status(400).json({ error: "No puede ser negativo" });
+    await pool.promise().query(
+      "UPDATE shisha_sabores SET stock_paquetes = ? WHERE id = ?",
+      [n, req.params.id]
+    );
+  } else {
+    await pool.promise().query(
+      "UPDATE shisha_sabores SET stock_paquetes = GREATEST(0, stock_paquetes + ?) WHERE id = ?",
+      [n, req.params.id]
+    );
+  }
+
   const [rows] = await pool.promise().query("SELECT * FROM shisha_sabores ORDER BY nombre ASC");
   res.json(rows);
 });
@@ -205,8 +242,11 @@ router.get("/shisha/cuenta", authenticate, async (req, res) => {
     FROM shisha_pagos ORDER BY fecha DESC LIMIT 30
   `);
   const [inversiones] = await pool.promise().query(`
-    SELECT id, monto, tipo, descripcion, fecha
-    FROM shisha_inversiones ORDER BY fecha DESC, id DESC
+    SELECT i.id, i.monto, i.tipo, i.insumo, i.cantidad, i.descripcion, i.fecha,
+           s.nombre AS sabor
+    FROM shisha_inversiones i
+    LEFT JOIN shisha_sabores s ON s.id = i.sabor_id
+    ORDER BY i.fecha DESC, i.id DESC
   `);
 
   const total_shisha = Number(totales.total_shisha);
@@ -272,13 +312,139 @@ router.post("/shisha/inversion", authenticate, async (req, res) => {
   res.json({ ok: true });
 });
 
+// POST compra: carga el gasto Y suma el stock en una sola operación.
+// Cada renglón entra como una fila de shisha_inversiones, así el reparto
+// capital/insumo sale solo y queda registrado cuánto se compró de cada cosa.
+const INSUMOS_STOCK = ["tabaco", "carbones", "papeles"];
+
+router.post("/shisha/compra", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
+
+  const { fecha, items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: "Cargá al menos un renglón" });
+  }
+
+  const fechaCompra = fecha || new Date().toISOString().slice(0, 10);
+  const limpios = [];
+
+  for (const [i, it] of items.entries()) {
+    const n = i + 1;
+    const insumo = it.insumo || "otro";
+    if (!["tabaco", "carbones", "papeles", "otro"].includes(insumo)) {
+      return res.status(400).json({ error: `Renglón ${n}: insumo inválido` });
+    }
+
+    const monto = Number(it.monto);
+    if (!monto || monto <= 0) return res.status(400).json({ error: `Renglón ${n}: monto inválido` });
+
+    // Los consumibles se reponen y se reembolsan por venta; lo demás (shishas,
+    // mangueras) es capital y forma el techo del recupero.
+    const tipo = it.tipo || (INSUMOS_STOCK.includes(insumo) ? "insumo" : "capital");
+    if (!["capital", "insumo"].includes(tipo)) {
+      return res.status(400).json({ error: `Renglón ${n}: tipo inválido` });
+    }
+
+    let cantidad = null;
+    if (INSUMOS_STOCK.includes(insumo)) {
+      cantidad = Number(it.cantidad);
+      if (!cantidad || cantidad <= 0) {
+        return res.status(400).json({ error: `Renglón ${n}: falta la cantidad` });
+      }
+    }
+
+    let saborId = null;
+    if (insumo === "tabaco") {
+      saborId = Number(it.sabor_id);
+      if (!saborId) return res.status(400).json({ error: `Renglón ${n}: elegí el sabor del tabaco` });
+      const [[sab]] = await pool.promise().query("SELECT id FROM shisha_sabores WHERE id = ?", [saborId]);
+      if (!sab) return res.status(400).json({ error: `Renglón ${n}: el sabor no existe` });
+    }
+
+    const descripcion = (it.descripcion || "").trim();
+    if (insumo === "otro" && !descripcion) {
+      return res.status(400).json({ error: `Renglón ${n}: poné una descripción` });
+    }
+
+    limpios.push({ insumo, tipo, monto, cantidad, saborId, descripcion });
+  }
+
+  const conn = await pool.promise().getConnection();
+  try {
+    await conn.beginTransaction();
+
+    for (const it of limpios) {
+      await conn.query(
+        `INSERT INTO shisha_inversiones
+           (monto, tipo, insumo, cantidad, sabor_id, descripcion, fecha, creado_por)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [it.monto, it.tipo, it.insumo, it.cantidad, it.saborId,
+         it.descripcion || null, fechaCompra, req.user?.id || null]
+      );
+
+      if (it.insumo === "tabaco") {
+        await conn.query(
+          "UPDATE shisha_sabores SET stock_paquetes = stock_paquetes + ? WHERE id = ?",
+          [it.cantidad, it.saborId]
+        );
+      } else if (it.insumo === "carbones") {
+        await conn.query("UPDATE shisha_insumos SET carbones = carbones + ?", [Math.round(it.cantidad)]);
+      } else if (it.insumo === "papeles") {
+        await conn.query("UPDATE shisha_insumos SET papeles = papeles + ?", [Math.round(it.cantidad)]);
+      }
+    }
+
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    return res.status(500).json({ error: "No se pudo guardar la compra" });
+  } finally {
+    conn.release();
+  }
+
+  const total = limpios.reduce((a, x) => a + x.monto, 0);
+  res.json({ ok: true, renglones: limpios.length, total });
+});
+
 // DELETE una inversión cargada mal
 router.delete("/shisha/inversion/:id", authenticate, async (req, res) => {
   if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
-  const [[i]] = await pool.promise().query("SELECT id FROM shisha_inversiones WHERE id = ?", [req.params.id]);
+  const [[i]] = await pool.promise().query(
+    "SELECT id, insumo, cantidad, sabor_id FROM shisha_inversiones WHERE id = ?",
+    [req.params.id]
+  );
   if (!i) return res.status(404).json({ error: "Inversión no encontrada" });
-  await pool.promise().query("DELETE FROM shisha_inversiones WHERE id = ?", [req.params.id]);
-  res.json({ ok: true });
+
+  const conn = await pool.promise().getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.query("DELETE FROM shisha_inversiones WHERE id = ?", [i.id]);
+
+    // Si el renglón había sumado stock, se devuelve al borrarlo. Nunca baja de
+    // cero: puede haberse vendido parte de lo que entró con esa compra.
+    const c = Number(i.cantidad) || 0;
+    if (c > 0) {
+      if (i.insumo === "tabaco" && i.sabor_id) {
+        await conn.query(
+          "UPDATE shisha_sabores SET stock_paquetes = GREATEST(0, stock_paquetes - ?) WHERE id = ?",
+          [c, i.sabor_id]
+        );
+      } else if (i.insumo === "carbones") {
+        await conn.query("UPDATE shisha_insumos SET carbones = GREATEST(0, carbones - ?)", [Math.round(c)]);
+      } else if (i.insumo === "papeles") {
+        await conn.query("UPDATE shisha_insumos SET papeles = GREATEST(0, papeles - ?)", [Math.round(c)]);
+      }
+    }
+
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    return res.status(500).json({ error: "No se pudo borrar" });
+  } finally {
+    conn.release();
+  }
+
+  res.json({ ok: true, stock_revertido: Number(i.cantidad) > 0 });
 });
 
 // POST registrar pago de shisha
