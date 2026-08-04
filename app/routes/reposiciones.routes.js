@@ -4,6 +4,16 @@ const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
 const { upsertStock } = require("../controllers/stockHelpers");
 
+// El costo se guarda en pesos y en USD: el de pesos se mueve con el dólar de
+// cada compra, el de USD es lo que realmente cobra el proveedor. Vacío = null,
+// para no confundir "no lo cargué" con "salió cero".
+const parseCosto = (valor, etiqueta) => {
+  if (valor == null || valor === "") return null;
+  const n = Number(valor);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`${etiqueta} inválido`);
+  return n;
+};
+
 // 🔵 Reposición (con historial)
 router.post("/reposicion", authenticate, async (req, res) => {
   const { gusto_id, cantidad, sucursal_id } = req.body;
@@ -28,20 +38,19 @@ router.post("/reposicion", authenticate, async (req, res) => {
       parseInt(cantidad)
     );
 
-    let precioCosto = null;
-    if (req.body.precio_costo != null && req.body.precio_costo !== "") {
-      const pc = Number(req.body.precio_costo);
-      if (!Number.isFinite(pc) || pc < 0) {
-        return res.status(400).json({ error: "Precio de costo inválido" });
-      }
-      precioCosto = pc;
+    let precioCosto, precioCostoUsd;
+    try {
+      precioCosto    = parseCosto(req.body.precio_costo, "Precio de costo");
+      precioCostoUsd = parseCosto(req.body.precio_costo_usd, "Precio de costo en USD");
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
     }
 
     await pool
       .promise()
       .query(
-        "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, precio_costo, fecha) VALUES (?, ?, ?, ?, NOW())",
-        [gusto_id, sucursal_id, cantidad, precioCosto]
+        "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, precio_costo, precio_costo_usd, fecha) VALUES (?, ?, ?, ?, ?, NOW())",
+        [gusto_id, sucursal_id, cantidad, precioCosto, precioCostoUsd]
       );
 
     res.json({ mensaje: "Reposición registrada correctamente ✅" });
@@ -106,20 +115,19 @@ router.post("/reposicion-por-codigo", authenticate, async (req, res) => {
 
     await upsertStock(gusto_id, parseInt(sucursal_id), parseInt(cantidad));
 
-    let precioCosto = null;
-    if (req.body.precio_costo != null && req.body.precio_costo !== "") {
-      const pc = Number(req.body.precio_costo);
-      if (!Number.isFinite(pc) || pc < 0) {
-        return res.status(400).json({ error: "Precio de costo inválido" });
-      }
-      precioCosto = pc;
+    let precioCosto, precioCostoUsd;
+    try {
+      precioCosto    = parseCosto(req.body.precio_costo, "Precio de costo");
+      precioCostoUsd = parseCosto(req.body.precio_costo_usd, "Precio de costo en USD");
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
     }
 
     await pool
       .promise()
       .query(
-        "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, precio_costo, fecha) VALUES (?, ?, ?, ?, NOW())",
-        [gusto_id, sucursal_id, cantidad, precioCosto]
+        "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, precio_costo, precio_costo_usd, fecha) VALUES (?, ?, ?, ?, ?, NOW())",
+        [gusto_id, sucursal_id, cantidad, precioCosto, precioCostoUsd]
       );
 
     res.json({ mensaje: "Reposición registrada por código ✅" });
@@ -547,6 +555,117 @@ router.patch("/costos-central/:gustoId", authenticate, async (req, res) => {
   } catch (e) {
     console.error("❌ Error en PATCH /costos-central:", e);
     res.status(500).json({ error: "Error al actualizar el costo" });
+  }
+});
+
+/**
+ * GET /costos-central/lista
+ * Lista de costos por modelo, para consulta rápida.
+ *
+ * El costo en pesos se mueve con el dólar de cada compra, así que el número
+ * principal es el de la última reposición y va acompañado del rango histórico.
+ * El USD es lo que cobra el proveedor y no debería moverse: si el rango se
+ * abre, subieron el precio. Solo admin.
+ */
+router.get("/costos-central/lista", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") {
+    return res.status(403).json({ error: "Acceso denegado" });
+  }
+
+  try {
+    const [rows] = await pool.promise().query(`
+      SELECT
+        p.id     AS producto_id,
+        p.nombre AS modelo,
+        COUNT(DISTINCT g.id)      AS sabores,
+        SUM(r.cantidad_repuesta)  AS unidades,
+        MAX(r.fecha)              AS ultima_compra,
+
+        MIN(r.precio_costo) AS costo_min,
+        MAX(r.precio_costo) AS costo_max,
+        MIN(r.precio_costo_usd) AS usd_min,
+        MAX(r.precio_costo_usd) AS usd_max,
+
+        -- Promedio ponderado: es el que usa el cálculo de margen real
+        SUM(r.cantidad_repuesta * r.precio_costo) /
+          NULLIF(SUM(CASE WHEN r.precio_costo IS NOT NULL THEN r.cantidad_repuesta END), 0) AS costo_prom,
+
+        -- Última compra con costo cargado, que es lo que costaría reponer hoy
+        (SELECT r2.precio_costo FROM reposiciones r2
+         JOIN gustos g2 ON g2.id = r2.gusto_id
+         WHERE g2.producto_id = p.id AND r2.sucursal_id = ? AND r2.precio_costo IS NOT NULL
+         ORDER BY r2.fecha DESC, r2.id DESC LIMIT 1) AS costo_ultimo,
+        (SELECT r2.precio_costo_usd FROM reposiciones r2
+         JOIN gustos g2 ON g2.id = r2.gusto_id
+         WHERE g2.producto_id = p.id AND r2.sucursal_id = ? AND r2.precio_costo_usd IS NOT NULL
+         ORDER BY r2.fecha DESC, r2.id DESC LIMIT 1) AS usd_ultimo,
+
+        SUM(r.precio_costo IS NULL)     AS sin_costo,
+        SUM(r.precio_costo_usd IS NULL) AS sin_usd,
+        COUNT(*) AS repos_total
+      FROM reposiciones r
+      JOIN gustos g    ON g.id = r.gusto_id
+      JOIN productos p ON p.id = g.producto_id
+      WHERE r.sucursal_id = ?
+      GROUP BY p.id, p.nombre
+      ORDER BY p.nombre
+    `, [CENTRAL_ID, CENTRAL_ID, CENTRAL_ID]);
+
+    res.json(rows);
+  } catch (e) {
+    console.error("❌ Error en GET /costos-central/lista:", e);
+    res.status(500).json({ error: "Error al armar la lista de costos" });
+  }
+});
+
+/**
+ * PATCH /costos-central/producto/:productoId/usd
+ * Carga el costo en USD de todas las reposiciones de un modelo.
+ * Body: { precio_costo_usd, modo?: "faltantes" | "todas" }
+ *
+ * Va por modelo y no por sabor porque el proveedor cobra lo mismo para todos
+ * los gustos del mismo modelo. Sirve para completar las compras viejas, que se
+ * cargaron antes de que existiera el campo. Solo admin.
+ */
+router.patch("/costos-central/producto/:productoId/usd", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") {
+    return res.status(403).json({ error: "Acceso denegado" });
+  }
+
+  const productoId = Number(req.params.productoId);
+  const { precio_costo_usd, modo = "faltantes" } = req.body || {};
+  const usd = Number(precio_costo_usd);
+
+  if (!productoId) return res.status(400).json({ error: "Modelo inválido" });
+  if (!Number.isFinite(usd) || usd <= 0) {
+    return res.status(400).json({ error: "El costo en USD tiene que ser mayor a cero" });
+  }
+  if (!["faltantes", "todas"].includes(modo)) {
+    return res.status(400).json({ error: "Modo inválido" });
+  }
+
+  try {
+    let where = `r.sucursal_id = ? AND g.producto_id = ?`;
+    if (modo === "faltantes") where += " AND r.precio_costo_usd IS NULL";
+
+    const [r] = await pool.promise().query(
+      `UPDATE reposiciones r JOIN gustos g ON g.id = r.gusto_id
+       SET r.precio_costo_usd = ? WHERE ${where}`,
+      [usd, CENTRAL_ID, productoId]
+    );
+
+    if (!r.affectedRows) {
+      return res.status(404).json({
+        error: modo === "faltantes"
+          ? "Ese modelo ya tiene el USD cargado en todas sus reposiciones"
+          : "No hay reposiciones de ese modelo en la Central",
+      });
+    }
+
+    res.json({ ok: true, actualizadas: r.affectedRows });
+  } catch (e) {
+    console.error("❌ Error en PATCH /costos-central/producto/:id/usd:", e);
+    res.status(500).json({ error: "Error al actualizar el costo en USD" });
   }
 });
 
