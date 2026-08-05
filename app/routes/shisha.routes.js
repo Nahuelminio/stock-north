@@ -354,16 +354,25 @@ router.post("/shisha/compra", authenticate, async (req, res) => {
     }
 
     let saborId = null;
+    let saborNombre = null;
     if (insumo === "tabaco") {
       saborId = Number(it.sabor_id);
       if (!saborId) return res.status(400).json({ error: `Renglón ${n}: elegí el sabor del tabaco` });
-      const [[sab]] = await pool.promise().query("SELECT id FROM shisha_sabores WHERE id = ?", [saborId]);
+      const [[sab]] = await pool.promise().query("SELECT id, nombre FROM shisha_sabores WHERE id = ?", [saborId]);
       if (!sab) return res.status(400).json({ error: `Renglón ${n}: el sabor no existe` });
+      saborNombre = sab.nombre;
     }
 
-    const descripcion = (it.descripcion || "").trim();
+    let descripcion = (it.descripcion || "").trim();
     if (insumo === "otro" && !descripcion) {
       return res.status(400).json({ error: `Renglón ${n}: poné una descripción` });
+    }
+    // Los consumibles no piden descripción, pero la columna es NOT NULL y
+    // además el historial se lee mejor con el detalle escrito.
+    if (!descripcion) {
+      descripcion = insumo === "tabaco"   ? `${cantidad} paq. ${saborNombre}`
+                  : insumo === "carbones" ? `${cantidad} carbones`
+                  :                         `${cantidad} papeles`;
     }
 
     limpios.push({ insumo, tipo, monto, cantidad, saborId, descripcion });
@@ -379,7 +388,7 @@ router.post("/shisha/compra", authenticate, async (req, res) => {
            (monto, tipo, insumo, cantidad, sabor_id, descripcion, fecha, creado_por)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [it.monto, it.tipo, it.insumo, it.cantidad, it.saborId,
-         it.descripcion || null, fechaCompra, req.user?.id || null]
+         it.descripcion, fechaCompra, req.user?.id || null]
       );
 
       if (it.insumo === "tabaco") {
@@ -397,6 +406,7 @@ router.post("/shisha/compra", authenticate, async (req, res) => {
     await conn.commit();
   } catch (e) {
     await conn.rollback();
+    console.error("❌ Error en POST /shisha/compra:", e);
     return res.status(500).json({ error: "No se pudo guardar la compra" });
   } finally {
     conn.release();
