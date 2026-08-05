@@ -61,15 +61,22 @@ router.get("/resumen-ganancias", authenticate, soloAdmin, async (req, res) => {
         LEFT JOIN stock st ON st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id
         GROUP BY v.sucursal_id
       ) reg ON reg.sucursal_id = s.id
+      -- total_ars es el total del PEDIDO. Si se joinea directo con los items,
+      -- la fila del pedido se repite una vez por item y el total se suma tantas
+      -- veces como items tenga. Por eso los items se agregan aparte.
       LEFT JOIN (
         SELECT
           pm.sucursal_id,
-          SUM(pm.total_ars)                AS ventas_mayorista,
-          SUM(pmi.cantidad * p.precio_costo) AS costo_mayorista
+          SUM(pm.total_ars) AS ventas_mayorista,
+          SUM(it.costo)     AS costo_mayorista
         FROM pedidos_mayoristas pm
-        JOIN pedido_mayorista_items pmi ON pmi.pedido_id = pm.id
-        JOIN gustos   g ON g.id = pmi.gusto_id
-        JOIN productos p ON p.id = g.producto_id
+        LEFT JOIN (
+          SELECT pmi.pedido_id, SUM(pmi.cantidad * p.precio_costo) AS costo
+          FROM pedido_mayorista_items pmi
+          JOIN gustos   g ON g.id = pmi.gusto_id
+          JOIN productos p ON p.id = g.producto_id
+          GROUP BY pmi.pedido_id
+        ) it ON it.pedido_id = pm.id
         WHERE pm.estado = 'confirmado'
         GROUP BY pm.sucursal_id
       ) may ON may.sucursal_id = s.id
@@ -115,15 +122,22 @@ router.get("/resumen-ganancias-mensual", authenticate, soloAdmin, async (req, re
         WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?
         GROUP BY v.sucursal_id
       ) reg ON reg.sucursal_id = s.id
+      -- total_ars es el total del PEDIDO. Si se joinea directo con los items,
+      -- la fila del pedido se repite una vez por item y el total se suma tantas
+      -- veces como items tenga. Por eso los items se agregan aparte.
       LEFT JOIN (
         SELECT
           pm.sucursal_id,
-          SUM(pm.total_ars)                AS ventas_mayorista,
-          SUM(pmi.cantidad * p.precio_costo) AS costo_mayorista
+          SUM(pm.total_ars) AS ventas_mayorista,
+          SUM(it.costo)     AS costo_mayorista
         FROM pedidos_mayoristas pm
-        JOIN pedido_mayorista_items pmi ON pmi.pedido_id = pm.id
-        JOIN gustos   g ON g.id = pmi.gusto_id
-        JOIN productos p ON p.id = g.producto_id
+        LEFT JOIN (
+          SELECT pmi.pedido_id, SUM(pmi.cantidad * p.precio_costo) AS costo
+          FROM pedido_mayorista_items pmi
+          JOIN gustos   g ON g.id = pmi.gusto_id
+          JOIN productos p ON p.id = g.producto_id
+          GROUP BY pmi.pedido_id
+        ) it ON it.pedido_id = pm.id
         WHERE pm.estado = 'confirmado'
           AND MONTH(pm.fecha_confirmacion) = ? AND YEAR(pm.fecha_confirmacion) = ?
         GROUP BY pm.sucursal_id
