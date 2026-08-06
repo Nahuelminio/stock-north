@@ -95,6 +95,31 @@ router.put("/shisha/sabores/:id/stock", authenticate, async (req, res) => {
   res.json(rows);
 });
 
+// Textos que salen publicados en el catálogo online (/public/shishas)
+router.put("/shisha/sabores/:id/carta", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
+
+  const { linea, resumen, descripcion, orden } = req.body || {};
+  const nombreLinea = (linea || "").trim();
+  if (!nombreLinea) return res.status(400).json({ error: "Falta la línea" });
+
+  await pool.promise().query(
+    `UPDATE shisha_sabores
+     SET linea = ?, resumen = ?, descripcion = ?, orden = ?
+     WHERE id = ?`,
+    [
+      nombreLinea,
+      (resumen || "").trim() || null,
+      (descripcion || "").trim() || null,
+      Number(orden) || 0,
+      req.params.id,
+    ]
+  );
+
+  const [rows] = await pool.promise().query("SELECT * FROM shisha_sabores ORDER BY nombre ASC");
+  res.json(rows);
+});
+
 router.put("/shisha/sabores/:id/toggle", authenticate, async (req, res) => {
   await pool.promise().query("UPDATE shisha_sabores SET activo = NOT activo WHERE id = ?", [req.params.id]);
   const [rows] = await pool.promise().query("SELECT * FROM shisha_sabores ORDER BY nombre ASC");

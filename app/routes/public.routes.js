@@ -825,5 +825,48 @@ router.get("/public/ventas-semanales", publicCors, async (req, res) => {
   }
 });
 
+/**
+ * GET /public/shishas
+ * Carta de shishas para el catálogo online. Los precios salen de la misma
+ * configuración que usa el bar, así no hay una segunda lista que mantener.
+ * Solo se publican los sabores activos; el stock no se expone.
+ */
+router.get("/public/shishas", publicCors, async (_req, res) => {
+  try {
+    const [[cfg]] = await pool
+      .promise()
+      .query("SELECT precio_nueva, precio_recarga FROM shisha_insumos LIMIT 1");
+
+    const [sabores] = await pool.promise().query(`
+      SELECT nombre, linea, resumen, descripcion
+      FROM shisha_sabores
+      WHERE activo = 1
+      ORDER BY linea, orden, nombre
+    `);
+
+    // Agrupado por línea, respetando el orden en que aparecen
+    const lineas = [];
+    for (const s of sabores) {
+      let g = lineas.find((x) => x.linea === s.linea);
+      if (!g) { g = { linea: s.linea, sabores: [] }; lineas.push(g); }
+      g.sabores.push({
+        nombre: s.nombre,
+        resumen: s.resumen,
+        descripcion: s.descripcion,
+      });
+    }
+
+    res.json({
+      precios: {
+        armado: Number(cfg?.precio_nueva) || 0,
+        recarga: Number(cfg?.precio_recarga) || 0,
+      },
+      lineas,
+    });
+  } catch (e) {
+    console.error("❌ Error en GET /public/shishas:", e);
+    res.status(500).json({ error: "No se pudo cargar la carta" });
+  }
+});
 
 module.exports = router;
