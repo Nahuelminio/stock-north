@@ -878,7 +878,7 @@ router.get("/public/evento/:slug", publicCors, async (req, res) => {
   try {
     const [[ev]] = await pool
       .promise()
-      .query("SELECT id, nombre, lugar, fecha, estado FROM eventos WHERE slug = ?", [req.params.slug]);
+      .query("SELECT id, nombre, lugar, nota, fecha, estado FROM eventos WHERE slug = ?", [req.params.slug]);
 
     if (!ev) return res.status(404).json({ error: "Ese catálogo no existe" });
     if (ev.estado !== "abierto") return res.status(410).json({ error: "Este catálogo ya no está disponible" });
@@ -901,10 +901,41 @@ router.get("/public/evento/:slug", publicCors, async (req, res) => {
       ORDER BY p.nombre, g.nombre
     `, [ev.id]);
 
-    res.json({ nombre: ev.nombre, lugar: ev.lugar, fecha: ev.fecha, items });
+    const [logos] = await pool.promise().query(
+      "SELECT imagen_base64, mime FROM evento_logos WHERE evento_id = ? ORDER BY orden, id",
+      [ev.id]
+    );
+
+    res.json({
+      nombre: ev.nombre,
+      lugar: ev.lugar,
+      nota: ev.nota,
+      fecha: ev.fecha,
+      logos: logos.map((l) => `data:${l.mime};base64,${l.imagen_base64}`),
+      items,
+    });
   } catch (e) {
     console.error("❌ Error en GET /public/evento/:slug:", e);
     res.status(500).json({ error: "No se pudo cargar el catálogo" });
+  }
+});
+/**
+ * GET /public/eventos-hoy
+ * Eventos abiertos que son hoy, para avisar en el catálogo principal.
+ * Devuelve lo justo para armar el aviso; el detalle va en su propia página.
+ */
+router.get("/public/eventos-hoy", publicCors, async (_req, res) => {
+  try {
+    const [rows] = await pool.promise().query(`
+      SELECT nombre, lugar, slug
+      FROM eventos
+      WHERE estado = 'abierto' AND fecha = CURDATE()
+      ORDER BY id
+    `);
+    res.json(rows);
+  } catch (e) {
+    console.error("❌ Error en GET /public/eventos-hoy:", e);
+    res.status(500).json({ error: "No se pudieron traer los eventos" });
   }
 });
 

@@ -379,8 +379,68 @@ router.get("/costos-central", authenticate, async (req, res) => {
       };
     });
 
-    // --- Combinar ---
-    const resultado = reposiciones.map(r => {
+    // --- Eventos cerrados del período ---
+    // Lo que entra es el neto: la comisión de la fiesta no llega a nuestra caja,
+    // así que contarla como facturado inflaría la ganancia.
+    let whereEv = "e.estado = 'cerrado'";
+    const paramsEv = [];
+    if (desde) { whereEv += " AND DATE(e.fecha) >= ?"; paramsEv.push(desde); }
+    if (hasta) { whereEv += " AND DATE(e.fecha) <= ?"; paramsEv.push(hasta); }
+
+    const [eventos] = await pool.promise().query(`
+      SELECT
+        i.gusto_id,
+        SUM(i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0)) AS unidades_eventos,
+        SUM((i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0)) * i.precio) AS bruto_eventos,
+        SUM((i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0)) * e.comision_unidad) AS comision_eventos
+      FROM evento_items i
+      JOIN eventos e ON e.id = i.evento_id
+      WHERE ${whereEv}
+      GROUP BY i.gusto_id
+    `, paramsEv);
+
+    const eventosMap = {};
+    eventos.forEach(e => {
+      const bruto = Number(e.bruto_eventos);
+      const comision = Number(e.comision_eventos);
+      eventosMap[e.gusto_id] = {
+        unidades_eventos: Number(e.unidades_eventos),
+        bruto_eventos: bruto,
+        comision_eventos: comision,
+        total_eventos: bruto - comision,
+      };
+    });
+
+    // --- Filas ---
+    // La lista salía sólo de las reposiciones del período, así que un producto
+    // vendido este mes pero repuesto el mes pasado no aparecía y su facturación
+    // no entraba en los totales. Se suman los que vendieron por cualquier canal.
+    const vendidosSinRepo = new Set();
+    [ventasMap, mayoristaMap, sucursalesMap, eventosMap].forEach((m) => {
+      Object.keys(m).forEach((id) => vendidosSinRepo.add(Number(id)));
+    });
+    reposiciones.forEach((r) => vendidosSinRepo.delete(Number(r.gusto_id)));
+
+    let filas = reposiciones;
+    if (vendidosSinRepo.size) {
+      const ids = [...vendidosSinRepo];
+      const [extra] = await pool.promise().query(`
+        SELECT g.id AS gusto_id, p.nombre AS producto, g.nombre AS gusto
+        FROM gustos g JOIN productos p ON p.id = g.producto_id
+        WHERE g.id IN (${ids.map(() => "?").join(",")})
+      `, ids);
+      filas = reposiciones.concat(extra.map((e) => ({
+        ...e,
+        unidades_repuestas: 0,
+        costo_total: 0,
+        costo_prom: null,
+        unidades_con_costo: 0,
+        repos_con_costo: 0,
+        repos_total: 0,
+      })));
+    }
+
+    const resultado = filas.map(r => {
       const precio_venta = precioMap[r.gusto_id]?.precio_venta ?? null;
       const stock_actual = precioMap[r.gusto_id]?.stock_actual ?? 0;
       const costo_prom   = r.costo_prom != null ? Number(r.costo_prom) : null;
@@ -392,6 +452,9 @@ router.get("/costos-central", authenticate, async (req, res) => {
       };
       const suc = sucursalesMap[r.gusto_id] || {
         unidades_sucursales: 0, total_sucursales: 0,
+      };
+      const evt = eventosMap[r.gusto_id] || {
+        unidades_eventos: 0, bruto_eventos: 0, comision_eventos: 0, total_eventos: 0,
       };
 
       const margen_unitario = (precio_venta != null && costo_prom != null)
@@ -407,9 +470,11 @@ router.get("/costos-central", authenticate, async (req, res) => {
 
       // --- Margen real: lo vendido contra el costo de esas mismas unidades ---
       const unidades_totales =
-        v.unidades_vendidas + may.unidades_mayorista + suc.unidades_sucursales;
+        v.unidades_vendidas + may.unidades_mayorista + suc.unidades_sucursales +
+        evt.unidades_eventos;
       const facturado =
-        v.total_vendido + may.total_mayorista + suc.total_sucursales;
+        v.total_vendido + may.total_mayorista + suc.total_sucursales +
+        evt.total_eventos;
 
       const costoUnit = costoUnitMap[r.gusto_id] ?? null;
       const costoVendido = costoUnit != null ? costoUnit * unidades_totales : null;
@@ -438,6 +503,10 @@ router.get("/costos-central", authenticate, async (req, res) => {
         // Mayorista
         unidades_mayorista: may.unidades_mayorista,
         total_mayorista: Number(may.total_mayorista.toFixed(2)),
+        // Eventos (fiestas): entra el neto, la comisión queda en la fiesta
+        unidades_eventos: evt.unidades_eventos,
+        total_eventos: Number(evt.total_eventos.toFixed(2)),
+        comision_eventos: Number(evt.comision_eventos.toFixed(2)),
         tc_estimado: may.tc_estimado,
         // Sucursales (lo que le rinden a Central)
         unidades_sucursales: suc.unidades_sucursales,
@@ -459,14 +528,18 @@ router.get("/costos-central", authenticate, async (req, res) => {
       total_vendido: Number(resultado.reduce((s, r) => s + r.total_vendido, 0).toFixed(2)),
       total_mayorista: Number(resultado.reduce((s, r) => s + r.total_mayorista, 0).toFixed(2)),
       total_sucursales: Number(resultado.reduce((s, r) => s + r.total_sucursales, 0).toFixed(2)),
+      total_eventos: Number(resultado.reduce((s, r) => s + r.total_eventos, 0).toFixed(2)),
+      comision_eventos: Number(resultado.reduce((s, r) => s + r.comision_eventos, 0).toFixed(2)),
       unidades_repuestas: resultado.reduce((s, r) => s + r.unidades_repuestas, 0),
       unidades_vendidas: resultado.reduce((s, r) => s + r.unidades_vendidas, 0),
       unidades_mayorista: resultado.reduce((s, r) => s + r.unidades_mayorista, 0),
       unidades_sucursales: resultado.reduce((s, r) => s + r.unidades_sucursales, 0),
+      unidades_eventos: resultado.reduce((s, r) => s + r.unidades_eventos, 0),
     };
-    // La facturación real de Central es la suma de los tres canales
+    // La facturación real de Central es la suma de los cuatro canales
     totales.total_facturado = Number(
-      (totales.total_vendido + totales.total_mayorista + totales.total_sucursales).toFixed(2)
+      (totales.total_vendido + totales.total_mayorista + totales.total_sucursales +
+        totales.total_eventos).toFixed(2)
     );
     totales.unidades_totales = resultado.reduce((s, r) => s + r.unidades_totales, 0);
 
