@@ -868,5 +868,44 @@ router.get("/public/shishas", publicCors, async (_req, res) => {
     res.status(500).json({ error: "No se pudo cargar la carta" });
   }
 });
+/**
+ * GET /public/evento/:slug
+ * Catálogo de un evento (fiesta con stock nuestro). Solo eventos abiertos:
+ * cerrado el evento el link deja de mostrar precios viejos.
+ * No expone cuántas unidades quedan, igual que la hoja impresa.
+ */
+router.get("/public/evento/:slug", publicCors, async (req, res) => {
+  try {
+    const [[ev]] = await pool
+      .promise()
+      .query("SELECT id, nombre, lugar, fecha, estado FROM eventos WHERE slug = ?", [req.params.slug]);
+
+    if (!ev) return res.status(404).json({ error: "Ese catálogo no existe" });
+    if (ev.estado !== "abierto") return res.status(410).json({ error: "Este catálogo ya no está disponible" });
+
+    // Misma forma que /public/productos para que el catálogo reuse los mismos
+    // ayudantes (separar modelo y gusto, sacar los puffs, resolver la imagen).
+    const [items] = await pool.promise().query(`
+      SELECT
+        g.id AS id,
+        CONCAT(
+          TRIM(REPLACE(REPLACE(p.nombre, CHAR(9), ' '), '  ', ' ')),
+          ' - ',
+          TRIM(REPLACE(REPLACE(g.nombre, CHAR(9), ' '), '  ', ' '))
+        ) AS nombre,
+        CAST(i.precio AS DECIMAL(10,2)) AS precio
+      FROM evento_items i
+      JOIN gustos g    ON g.id = i.gusto_id
+      JOIN productos p ON p.id = g.producto_id
+      WHERE i.evento_id = ? AND i.cantidad_llevada > 0
+      ORDER BY p.nombre, g.nombre
+    `, [ev.id]);
+
+    res.json({ nombre: ev.nombre, lugar: ev.lugar, fecha: ev.fecha, items });
+  } catch (e) {
+    console.error("❌ Error en GET /public/evento/:slug:", e);
+    res.status(500).json({ error: "No se pudo cargar el catálogo" });
+  }
+});
 
 module.exports = router;
