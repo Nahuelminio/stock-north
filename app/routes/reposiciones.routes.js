@@ -274,7 +274,8 @@ router.get("/costos-central", authenticate, async (req, res) => {
     precios.forEach(p => { precioMap[p.gusto_id] = { precio_venta: Number(p.precio_venta), stock_actual: Number(p.stock_actual) }; });
 
     // --- Ventas del período en la Central ---
-    let whereVentas = "v.sucursal_id = ?";
+    // Las ventas de evento tienen su propio canal; sin esto se contarían dos veces
+    let whereVentas = "v.sucursal_id = ? AND v.evento_id IS NULL";
     const paramsVentas = [CENTRAL_ID];
     if (desde) { whereVentas += " AND DATE(v.fecha) >= ?"; paramsVentas.push(desde); }
     if (hasta) { whereVentas += " AND DATE(v.fecha) <= ?"; paramsVentas.push(hasta); }
@@ -380,34 +381,32 @@ router.get("/costos-central", authenticate, async (req, res) => {
     });
 
     // --- Eventos cerrados del período ---
-    // Lo que entra es el neto: la comisión de la fiesta no llega a nuestra caja,
-    // así que contarla como facturado inflaría la ganancia.
-    let whereEv = "e.estado = 'cerrado'";
+    // Sale de `ventas`, que es donde el cierre registra lo vendido, para que
+    // haya una sola fuente. Ahí el precio ya es el neto; la comisión se
+    // reconstruye desde el evento sólo para poder mostrarla aparte.
+    let whereEv = "v.evento_id IS NOT NULL";
     const paramsEv = [];
-    if (desde) { whereEv += " AND DATE(e.fecha) >= ?"; paramsEv.push(desde); }
-    if (hasta) { whereEv += " AND DATE(e.fecha) <= ?"; paramsEv.push(hasta); }
+    if (desde) { whereEv += " AND DATE(v.fecha) >= ?"; paramsEv.push(desde); }
+    if (hasta) { whereEv += " AND DATE(v.fecha) <= ?"; paramsEv.push(hasta); }
 
     const [eventos] = await pool.promise().query(`
       SELECT
-        i.gusto_id,
-        SUM(i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0)) AS unidades_eventos,
-        SUM((i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0)) * i.precio) AS bruto_eventos,
-        SUM((i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0)) * e.comision_unidad) AS comision_eventos
-      FROM evento_items i
-      JOIN eventos e ON e.id = i.evento_id
+        v.gusto_id,
+        SUM(v.cantidad)                          AS unidades_eventos,
+        SUM(v.cantidad * v.precio_unitario)      AS total_eventos,
+        SUM(v.cantidad * e.comision_unidad)      AS comision_eventos
+      FROM ventas v
+      JOIN eventos e ON e.id = v.evento_id
       WHERE ${whereEv}
-      GROUP BY i.gusto_id
+      GROUP BY v.gusto_id
     `, paramsEv);
 
     const eventosMap = {};
     eventos.forEach(e => {
-      const bruto = Number(e.bruto_eventos);
-      const comision = Number(e.comision_eventos);
       eventosMap[e.gusto_id] = {
         unidades_eventos: Number(e.unidades_eventos),
-        bruto_eventos: bruto,
-        comision_eventos: comision,
-        total_eventos: bruto - comision,
+        total_eventos: Number(e.total_eventos),
+        comision_eventos: Number(e.comision_eventos),
       };
     });
 
@@ -454,7 +453,7 @@ router.get("/costos-central", authenticate, async (req, res) => {
         unidades_sucursales: 0, total_sucursales: 0,
       };
       const evt = eventosMap[r.gusto_id] || {
-        unidades_eventos: 0, bruto_eventos: 0, comision_eventos: 0, total_eventos: 0,
+        unidades_eventos: 0, comision_eventos: 0, total_eventos: 0,
       };
 
       const margen_unitario = (precio_venta != null && costo_prom != null)

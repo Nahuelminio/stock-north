@@ -319,6 +319,21 @@ router.post("/eventos/:id/cerrar", authenticate, soloAdmin, async (req, res) => 
       "UPDATE evento_items SET cantidad_devuelta = 0 WHERE evento_id = ? AND cantidad_devuelta IS NULL",
       [ev.id]
     );
+
+    // Se registran las ventas del evento en `ventas`, si no el Dashboard y el
+    // resto del sistema no las ven. Se guarda el neto y no el precio de
+    // catálogo: la comisión de la fiesta nunca llega a nuestra caja.
+    // La marca `evento_id` permite distinguirlas de las ventas del local.
+    await conn.query("DELETE FROM ventas WHERE evento_id = ?", [ev.id]);
+    await conn.query(`
+      INSERT INTO ventas (gusto_id, sucursal_id, evento_id, cantidad, precio_unitario, fecha)
+      SELECT i.gusto_id, ?, ?, 
+             i.cantidad_llevada - i.cantidad_devuelta,
+             GREATEST(i.precio - ?, 0),
+             ?
+      FROM evento_items i
+      WHERE i.evento_id = ? AND i.cantidad_llevada - i.cantidad_devuelta > 0
+    `, [ev.sucursal_origen_id, ev.id, ev.comision_unidad, ev.fecha, ev.id]);
     await conn.query(
       "UPDATE eventos SET estado = 'cerrado', cerrado_at = NOW() WHERE id = ?",
       [ev.id]
@@ -545,6 +560,8 @@ router.post("/eventos/:id/reabrir", authenticate, soloAdmin, async (req, res) =>
       }
     }
 
+    // Se deshace la venta registrada: el evento vuelve a estar en curso
+    await conn.query("DELETE FROM ventas WHERE evento_id = ?", [ev.id]);
     await conn.query("UPDATE evento_items SET cantidad_devuelta = NULL WHERE evento_id = ?", [ev.id]);
     await conn.query(
       "UPDATE eventos SET estado = 'abierto', cerrado_at = NULL WHERE id = ?", [ev.id]
@@ -580,6 +597,8 @@ router.delete("/eventos/:id", authenticate, soloAdmin, async (req, res) => {
       }
     }
 
+    // El evento deja de existir, así que su facturación tampoco
+    await conn.query("DELETE FROM ventas WHERE evento_id = ?", [ev.id]);
     await conn.query("DELETE FROM eventos WHERE id = ?", [ev.id]);
     await conn.commit();
     res.json({ ok: true, stock_devuelto: ev.estado === "abierto" });
