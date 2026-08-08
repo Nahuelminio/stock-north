@@ -7,6 +7,57 @@ const pool = require("../db");
 // CORS SOLO para endpoints públicos
 const publicCors = cors({ origin: "*", credentials: false });
 
+/**
+ * Busca una sucursal por texto libre, como llega desde el bot de Telegram
+ * (@casa-martin, @north-punto-9). Compara normalizado —sin acentos, sin #,
+ * sin guiones— porque si no un renombre rompe los comandos: "North Punto #2"
+ * nunca iba a matchear con "casa martin" ni con "north punto 2".
+ */
+const normSuc = (s) =>
+  String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+async function buscarSucursal(texto) {
+  const buscado = normSuc(texto);
+  if (!buscado) return null;
+
+  const [filas] = await pool
+    .promise()
+    .query("SELECT id, nombre, apodo FROM sucursales");
+
+  // Primero exacto por nombre o apodo, después por contención, para que
+  // "central posadas" siga encontrando Central.
+  const exacto = filas.find(
+    (f) => normSuc(f.nombre) === buscado || normSuc(f.apodo) === buscado
+  );
+  if (exacto) return exacto;
+
+  const contenida = filas.find(
+    (f) =>
+      (normSuc(f.nombre) && buscado.includes(normSuc(f.nombre))) ||
+      (normSuc(f.apodo) && buscado.includes(normSuc(f.apodo)))
+  );
+  if (contenida) return contenida;
+
+  // Al revés: "punto 9" para "North Punto #9". Solo si una sola sucursal
+  // coincide — con dos o más se estaría adivinando, y adivinar mal acá
+  // descuenta stock de la sucursal equivocada.
+  if (buscado.length >= 4) {
+    const parciales = filas.filter(
+      (f) =>
+        normSuc(f.nombre).includes(buscado) ||
+        (normSuc(f.apodo) && normSuc(f.apodo).includes(buscado))
+    );
+    if (parciales.length === 1) return parciales[0];
+  }
+
+  return null;
+}
+
 // Helper para forzar respuesta JSON sin compresión (evita que Render/nginx gzipee)
 function sendJson(res, status, data) {
   const body = JSON.stringify(data);
@@ -109,10 +160,8 @@ router.post("/public/registrar-venta", publicCors, async (req, res) => {
     await conn.beginTransaction();
 
     // 🔹 Buscar sucursal (por nombre, apodo o id numérico)
-    const [sucRows] = await conn.query(
-      `SELECT id, nombre FROM sucursales WHERE LOWER(nombre)=? OR LOWER(apodo)=? LIMIT 1`,
-      [sucursal, sucursal]
-    );
+    const encontrada = await buscarSucursal(sucursal);
+    const sucRows = encontrada ? [encontrada] : [];
     if (!sucRows.length) {
       await conn.rollback();
       return sendJson(res, 404, { ok: false, msg: `Sucursal no encontrada: "${sucursal}"` });
@@ -422,14 +471,8 @@ router.post("/public/clientes", publicCors, async (req, res) => {
     // Resolver sucursal_id si te mandan el nombre (match por nombre real o apodo)
     let sucursalId = null;
     if (sucursal && String(sucursal).trim()) {
-      const search = String(sucursal).trim();
-      const [suc] = await pool.promise().query(
-        `SELECT id FROM sucursales
-           WHERE nombre = ? OR apodo = ?
-           LIMIT 1`,
-        [search, search]
-      );
-      if (suc.length) sucursalId = suc[0].id;
+      const encontrada = await buscarSucursal(sucursal);
+      if (encontrada) sucursalId = encontrada.id;
     }
 
     // Insert
