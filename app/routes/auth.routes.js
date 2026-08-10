@@ -21,21 +21,52 @@ router.post("/register", authenticate, async (req, res) => {
   if (!email || !password || (!sucursal_id && rolFinal !== "admin")) {
     return res.status(400).json({ error: "Faltan datos" });
   }
+  if (String(password).length < 6) {
+    return res.status(400).json({ error: "La contraseña tiene que tener al menos 6 caracteres" });
+  }
 
   try {
+    // Sin esto el INSERT falla con un error de base que no dice nada
+    const [[existe]] = await pool
+      .promise()
+      .query("SELECT id FROM usuarios WHERE email = ?", [email.trim()]);
+    if (existe) {
+      return res.status(400).json({ error: "Ya hay un usuario con ese email" });
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
 
     await pool
       .promise()
       .query(
         "INSERT INTO usuarios (email, password_hash, sucursal_id, rol) VALUES (?, ?, ?, ?)",
-        [email, hashedPassword, sucursal_id || null, rolFinal]
+        [email.trim(), hashedPassword, sucursal_id || null, rolFinal]
       );
 
     res.json({ mensaje: "✅ Usuario registrado" });
   } catch (error) {
     console.error("❌ Error en /register:", error);
     res.status(500).json({ error: "Error al registrar usuario" });
+  }
+});
+
+// ✅ Listado de usuarios — solo admin
+router.get("/usuarios", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") {
+    return res.status(403).json({ error: "Acceso denegado: solo administradores" });
+  }
+  try {
+    // Nunca se devuelve el hash de la contraseña, ni siquiera al admin
+    const [rows] = await pool.promise().query(`
+      SELECT u.id, u.email, u.rol, u.sucursal_id, s.nombre AS sucursal
+      FROM usuarios u
+      LEFT JOIN sucursales s ON s.id = u.sucursal_id
+      ORDER BY u.rol, u.email
+    `);
+    res.json(rows);
+  } catch (error) {
+    console.error("❌ Error en GET /auth/usuarios:", error);
+    res.status(500).json({ error: "No se pudieron traer los usuarios" });
   }
 });
 

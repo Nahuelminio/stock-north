@@ -168,10 +168,20 @@ router.get("/eventos", authenticate, soloAdmin, async (_req, res) => {
         COUNT(i.id) AS productos,
         COALESCE(SUM(i.cantidad_llevada), 0) AS unidades,
         e.comision_unidad,
-        COALESCE(SUM((i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0)) * i.precio), 0) AS bruto,
+        COALESCE(SUM(
+          (i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0) - i.cantidad_directa) * i.precio
+          + i.cantidad_directa * COALESCE(i.precio_directo, i.precio)
+        ), 0) AS bruto,
         COALESCE(SUM(i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0)), 0) AS vendidas,
-        COALESCE(SUM((i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0)) * e.comision_unidad), 0) AS comision,
-        COALESCE(SUM((i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0)) * (i.precio - e.comision_unidad)), 0) AS neto
+        COALESCE(SUM(i.cantidad_directa), 0) AS directas,
+        COALESCE(SUM(i.cantidad_directa * COALESCE(i.precio_directo, i.precio)), 0) AS total_directo,
+        -- La comisión y lo que rinde la fiesta salen sólo de lo que vendió ella
+        COALESCE(SUM((i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0) - i.cantidad_directa) * e.comision_unidad), 0) AS comision,
+        COALESCE(SUM((i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0) - i.cantidad_directa) * (i.precio - e.comision_unidad)), 0) AS a_rendir,
+        COALESCE(SUM(
+          (i.cantidad_llevada - COALESCE(i.cantidad_devuelta, 0) - i.cantidad_directa) * (i.precio - e.comision_unidad)
+          + i.cantidad_directa * COALESCE(i.precio_directo, i.precio)
+        ), 0) AS neto
       FROM eventos e
       LEFT JOIN evento_items i ON i.evento_id = e.id
       GROUP BY e.id
@@ -248,6 +258,7 @@ router.get("/eventos/:id", authenticate, soloAdmin, async (req, res) => {
     const [items] = await pool.promise().query(`
       SELECT
         i.id, i.gusto_id, i.cantidad_llevada, i.cantidad_devuelta, i.precio,
+        i.cantidad_directa, i.precio_directo,
         p.nombre AS producto, g.nombre AS gusto
       FROM evento_items i
       JOIN gustos g    ON g.id = i.gusto_id
@@ -274,8 +285,12 @@ router.get("/eventos/:id", authenticate, soloAdmin, async (req, res) => {
 
 /**
  * POST /eventos/:id/cerrar
- * Body: { devoluciones: [{ item_id, cantidad }] }
+ * Body: { devoluciones: [{ item_id, cantidad, directas?, precio_directo? }] }
  * Reingresa a Central lo que volvió y deja registrado lo vendido.
+ *
+ * `directas` son las unidades que no vendió la fiesta: se las llevó alguien
+ * nuestro y nos pagó a nosotros. No pagan comisión y no entran en lo que la
+ * fiesta tiene que rendir, pero sí son una venta y se registran igual.
  */
 router.post("/eventos/:id/cerrar", authenticate, soloAdmin, async (req, res) => {
   const { devoluciones } = req.body || {};
@@ -305,7 +320,36 @@ router.post("/eventos/:id/cerrar", authenticate, soloAdmin, async (req, res) => 
           error: `No pueden volver ${vuelven} de un producto del que se llevaron ${it.cantidad_llevada}`,
         });
       }
-      await conn.query("UPDATE evento_items SET cantidad_devuelta = ? WHERE id = ?", [vuelven, it.id]);
+
+      const directas = Number(d.directas) || 0;
+      if (directas < 0) {
+        await conn.rollback();
+        return res.status(400).json({ error: "Las unidades pagadas directo no pueden ser negativas" });
+      }
+      if (vuelven + directas > it.cantidad_llevada) {
+        await conn.rollback();
+        return res.status(400).json({
+          error: `De ese producto se llevaron ${it.cantidad_llevada} y estás declarando ${vuelven} devueltas más ${directas} pagadas directo`,
+        });
+      }
+
+      // Sin precio propio se toma el del catálogo del evento
+      let precioDirecto = null;
+      if (directas > 0) {
+        precioDirecto =
+          d.precio_directo === undefined || d.precio_directo === "" || d.precio_directo === null
+            ? Number(it.precio)
+            : Number(d.precio_directo);
+        if (!Number.isFinite(precioDirecto) || precioDirecto < 0) {
+          await conn.rollback();
+          return res.status(400).json({ error: "Precio inválido en una venta directa" });
+        }
+      }
+
+      await conn.query(
+        "UPDATE evento_items SET cantidad_devuelta = ?, cantidad_directa = ?, precio_directo = ? WHERE id = ?",
+        [vuelven, directas, precioDirecto, it.id]
+      );
       if (vuelven > 0) {
         await conn.query(
           "UPDATE stock SET cantidad = cantidad + ? WHERE sucursal_id = ? AND gusto_id = ?",
@@ -325,28 +369,48 @@ router.post("/eventos/:id/cerrar", authenticate, soloAdmin, async (req, res) => 
     // catálogo: la comisión de la fiesta nunca llega a nuestra caja.
     // La marca `evento_id` permite distinguirlas de las ventas del local.
     await conn.query("DELETE FROM ventas WHERE evento_id = ?", [ev.id]);
+    // Lo que vendió la fiesta: entra el precio menos su comisión
     await conn.query(`
       INSERT INTO ventas (gusto_id, sucursal_id, evento_id, cantidad, precio_unitario, fecha)
-      SELECT i.gusto_id, ?, ?, 
-             i.cantidad_llevada - i.cantidad_devuelta,
+      SELECT i.gusto_id, ?, ?,
+             i.cantidad_llevada - i.cantidad_devuelta - i.cantidad_directa,
              GREATEST(i.precio - ?, 0),
              ?
       FROM evento_items i
-      WHERE i.evento_id = ? AND i.cantidad_llevada - i.cantidad_devuelta > 0
+      WHERE i.evento_id = ?
+        AND i.cantidad_llevada - i.cantidad_devuelta - i.cantidad_directa > 0
     `, [ev.sucursal_origen_id, ev.id, ev.comision_unidad, ev.fecha, ev.id]);
+    // Lo que se pagó directo a nosotros: entra completo, sin comisión
+    await conn.query(`
+      INSERT INTO ventas (gusto_id, sucursal_id, evento_id, cantidad, precio_unitario, fecha)
+      SELECT i.gusto_id, ?, ?, i.cantidad_directa, COALESCE(i.precio_directo, i.precio), ?
+      FROM evento_items i
+      WHERE i.evento_id = ? AND i.cantidad_directa > 0
+    `, [ev.sucursal_origen_id, ev.id, ev.fecha, ev.id]);
     await conn.query(
       "UPDATE eventos SET estado = 'cerrado', cerrado_at = NOW() WHERE id = ?",
       [ev.id]
     );
 
+    // `vendidas` y `bruto` cuentan todo lo que salió; la comisión y lo que la
+    // fiesta rinde salen sólo de lo que vendió ella.
     const [[tot]] = await conn.query(`
       SELECT
         COALESCE(SUM(cantidad_llevada - cantidad_devuelta), 0) AS vendidas,
-        COALESCE(SUM((cantidad_llevada - cantidad_devuelta) * precio), 0) AS bruto,
-        COALESCE(SUM((cantidad_llevada - cantidad_devuelta) * ?), 0) AS comision,
-        COALESCE(SUM((cantidad_llevada - cantidad_devuelta) * (precio - ?)), 0) AS neto
+        COALESCE(SUM(
+          (cantidad_llevada - cantidad_devuelta - cantidad_directa) * precio
+          + cantidad_directa * COALESCE(precio_directo, precio)
+        ), 0) AS bruto,
+        COALESCE(SUM(cantidad_directa), 0) AS directas,
+        COALESCE(SUM(cantidad_directa * COALESCE(precio_directo, precio)), 0) AS total_directo,
+        COALESCE(SUM((cantidad_llevada - cantidad_devuelta - cantidad_directa) * ?), 0) AS comision,
+        COALESCE(SUM((cantidad_llevada - cantidad_devuelta - cantidad_directa) * (precio - ?)), 0) AS a_rendir,
+        COALESCE(SUM(
+          (cantidad_llevada - cantidad_devuelta - cantidad_directa) * (precio - ?)
+          + cantidad_directa * COALESCE(precio_directo, precio)
+        ), 0) AS neto
       FROM evento_items WHERE evento_id = ?
-    `, [ev.comision_unidad, ev.comision_unidad, ev.id]);
+    `, [ev.comision_unidad, ev.comision_unidad, ev.comision_unidad, ev.id]);
 
     await conn.commit();
     res.json({ ok: true, ...tot });
@@ -562,7 +626,10 @@ router.post("/eventos/:id/reabrir", authenticate, soloAdmin, async (req, res) =>
 
     // Se deshace la venta registrada: el evento vuelve a estar en curso
     await conn.query("DELETE FROM ventas WHERE evento_id = ?", [ev.id]);
-    await conn.query("UPDATE evento_items SET cantidad_devuelta = NULL WHERE evento_id = ?", [ev.id]);
+    await conn.query(
+      "UPDATE evento_items SET cantidad_devuelta = NULL, cantidad_directa = 0, precio_directo = NULL WHERE evento_id = ?",
+      [ev.id]
+    );
     await conn.query(
       "UPDATE eventos SET estado = 'abierto', cerrado_at = NULL WHERE id = ?", [ev.id]
     );

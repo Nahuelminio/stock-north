@@ -63,10 +63,28 @@ router.patch("/:id", authenticate, async (req, res) => {
   const { nombre, telefono } = req.body;
   if (req.user?.rol !== "admin")
     return res.status(403).json({ error: "Solo administradores" });
+
+  // Solo se toca lo que viene en el body. Antes el teléfono se escribía siempre,
+  // así que renombrar una sucursal le borraba el número de los remitos.
+  const campos = [];
+  const valores = [];
+  if (nombre !== undefined) {
+    if (!String(nombre).trim()) {
+      return res.status(400).json({ error: "El nombre no puede quedar vacío" });
+    }
+    campos.push("nombre = ?");
+    valores.push(String(nombre).trim());
+  }
+  if (telefono !== undefined) {
+    campos.push("telefono = ?");
+    valores.push(telefono || null);
+  }
+  if (!campos.length) return res.status(400).json({ error: "No hay nada para cambiar" });
+
   try {
     await pool.promise().query(
-      "UPDATE sucursales SET nombre = COALESCE(?, nombre), telefono = ? WHERE id = ?",
-      [nombre || null, telefono || null, req.params.id]
+      `UPDATE sucursales SET ${campos.join(", ")} WHERE id = ?`,
+      [...valores, req.params.id]
     );
     const [[s]] = await pool.promise().query("SELECT * FROM sucursales WHERE id = ?", [req.params.id]);
     res.json(s);

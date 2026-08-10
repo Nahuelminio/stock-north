@@ -56,6 +56,7 @@ app.use("/vendedores", require("./routes/vendedores.routes"));
 app.use("/", require("./routes/pedidosCentral.routes"));
 app.use("/", require("./routes/shisha.routes"));
 app.use("/", require("./routes/eventos.routes"));
+app.use("/", require("./routes/metricas.routes"));
 
 
 
