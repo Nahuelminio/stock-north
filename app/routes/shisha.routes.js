@@ -6,6 +6,10 @@ const authenticate = require("../middlewares/authenticate");
 const COSTO_USD = { tabaco: 4 / 3, carbones: 0.2 * 2, papel: 0.13 };
 const COSTO_TOTAL_USD = COSTO_USD.tabaco + COSTO_USD.carbones + COSTO_USD.papel;
 
+// Una shisha usa un tercio de paquete, así que el paquete entero sale el triple.
+// Se vende cerrado: no lleva carbón ni aluminio.
+const COSTO_PAQUETE_USD = COSTO_USD.tabaco * 3;
+
 // GET config e insumos
 router.get("/shisha/config", authenticate, async (req, res) => {
   const [rows] = await pool.promise().query("SELECT * FROM shisha_insumos LIMIT 1");
@@ -14,10 +18,13 @@ router.get("/shisha/config", authenticate, async (req, res) => {
 
 // PUT actualizar config
 router.put("/shisha/config", authenticate, async (req, res) => {
-  const { precio_dolar, precio_nueva, precio_recarga } = req.body;
+  const { precio_dolar, precio_nueva, precio_recarga, precio_paquete } = req.body;
+  // El precio del paquete se agregó después: si no viene, se deja el que estaba
   await pool.promise().query(
-    "UPDATE shisha_insumos SET precio_dolar = ?, precio_nueva = ?, precio_recarga = ?",
-    [precio_dolar, precio_nueva, precio_recarga]
+    `UPDATE shisha_insumos SET precio_dolar = ?, precio_nueva = ?, precio_recarga = ?,
+            precio_paquete = COALESCE(?, precio_paquete)`,
+    [precio_dolar, precio_nueva, precio_recarga,
+     precio_paquete === undefined || precio_paquete === "" ? null : precio_paquete]
   );
   res.json({ ok: true });
 });
@@ -164,6 +171,82 @@ router.post("/shisha/alquiler", authenticate, async (req, res) => {
   res.json({ ok: true, insumos: insumos[0], sabores, ganancia, costo_pesos });
 });
 
+/**
+ * POST /shisha/paquete
+ * Venta de paquetes de tabaco cerrados, sin armar la shisha.
+ * Body: { sabor_id, cantidad?, precio?, nota? }
+ *
+ * A diferencia del alquiler, descuenta paquetes enteros y no toca carbones ni
+ * aluminio. `precio` es el total de la venta; si no viene se usa el precio
+ * configurado por paquete.
+ */
+router.post("/shisha/paquete", authenticate, async (req, res) => {
+  const { sabor_id, nota } = req.body;
+  const cantidad = Number(req.body.cantidad ?? 1);
+
+  if (!sabor_id) return res.status(400).json({ error: "Seleccioná un sabor" });
+  if (!Number.isInteger(cantidad) || cantidad <= 0) {
+    return res.status(400).json({ error: "Cantidad inválida" });
+  }
+
+  const conn = await pool.promise().getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [[config]] = await conn.query("SELECT * FROM shisha_insumos LIMIT 1");
+
+    // Se bloquea el sabor para que dos ventas al mismo tiempo no dejen el
+    // stock en negativo.
+    const [[sabor]] = await conn.query(
+      "SELECT * FROM shisha_sabores WHERE id = ? AND activo = 1 FOR UPDATE", [sabor_id]);
+    if (!sabor) { await conn.rollback(); return res.status(400).json({ error: "Sabor no encontrado" }); }
+    if (Number(sabor.stock_paquetes) < cantidad) {
+      await conn.rollback();
+      return res.status(400).json({
+        error: `Solo quedan ${Number(sabor.stock_paquetes).toFixed(2)} paquetes de ${sabor.nombre}`,
+      });
+    }
+
+    const unitario = req.body.precio === undefined || req.body.precio === "" || req.body.precio === null
+      ? Number(config.precio_paquete)
+      : Number(req.body.precio);
+    if (!Number.isFinite(unitario) || unitario < 0) {
+      await conn.rollback();
+      return res.status(400).json({ error: "Precio inválido" });
+    }
+
+    // Se guardan los totales de la venta, como el resto del módulo, para que
+    // la cuenta con Fagu y los informes sigan sumando igual.
+    const precio_venta = Math.round(unitario * cantidad);
+    const costo_usd = COSTO_PAQUETE_USD * cantidad;
+    const costo_pesos = costo_usd * Number(config.precio_dolar);
+    const ganancia = precio_venta - costo_pesos;
+
+    await conn.query(
+      "UPDATE shisha_sabores SET stock_paquetes = stock_paquetes - ? WHERE id = ?",
+      [cantidad, sabor_id]
+    );
+    await conn.query(
+      `INSERT INTO shisha_ventas
+         (tipo, cantidad, precio_venta, costo_usd, precio_dolar, costo_pesos, ganancia, sabor_id, sabor_nombre, nota)
+       VALUES ('paquete', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [cantidad, precio_venta, costo_usd, config.precio_dolar, costo_pesos, ganancia,
+       sabor_id, sabor.nombre, nota || null]
+    );
+
+    await conn.commit();
+    const [insumos] = await pool.promise().query("SELECT * FROM shisha_insumos LIMIT 1");
+    const [sabores] = await pool.promise().query("SELECT * FROM shisha_sabores ORDER BY nombre ASC");
+    res.json({ ok: true, insumos: insumos[0], sabores, ganancia, costo_pesos, precio_venta });
+  } catch (e) {
+    await conn.rollback();
+    console.error("❌ Error en POST /shisha/paquete:", e);
+    res.status(500).json({ error: "No se pudo registrar la venta" });
+  } finally {
+    conn.release();
+  }
+});
+
 // PUT anular venta (devuelve insumos al stock)
 router.put("/shisha/ventas/:id/anular", authenticate, async (req, res) => {
   const [rows] = await pool.promise().query("SELECT * FROM shisha_ventas WHERE id = ? AND anulada = 0", [req.params.id]);
@@ -172,12 +255,17 @@ router.put("/shisha/ventas/:id/anular", authenticate, async (req, res) => {
 
   await pool.promise().query("UPDATE shisha_ventas SET anulada = 1 WHERE id = ?", [req.params.id]);
 
-  // Devolver insumos
-  await pool.promise().query("UPDATE shisha_insumos SET carbones = carbones + 2, papeles = papeles + 1");
+  // Se devuelve lo que esa venta consumió, que no es lo mismo en los dos casos:
+  // la venta de un paquete cerrado no gastó carbón ni aluminio.
+  const esPaquete = venta.tipo === "paquete";
+  if (!esPaquete) {
+    await pool.promise().query("UPDATE shisha_insumos SET carbones = carbones + 2, papeles = papeles + 1");
+  }
   if (venta.sabor_id) {
+    const vuelve = esPaquete ? Number(venta.cantidad) || 1 : 1 / 3;
     await pool.promise().query(
       "UPDATE shisha_sabores SET stock_paquetes = stock_paquetes + ? WHERE id = ?",
-      [1 / 3, venta.sabor_id]
+      [vuelve, venta.sabor_id]
     );
   }
 
