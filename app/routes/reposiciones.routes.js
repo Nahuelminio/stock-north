@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
+const { marcar, limpiar } = require("../movimientos");
 const { upsertStock } = require("../controllers/stockHelpers");
 
 // El costo se guarda en pesos y en USD: el de pesos se mueve con el dólar de
@@ -196,12 +197,20 @@ router.post("/actualizar-stock-precio", authenticate, async (req, res) => {
           ]);
       }
 
-      await pool
-        .promise()
-        .query(
+      // Este es el ajuste a mano del control de stock: pisa la cantidad sin
+      // dejar constancia de qué había antes. Es el que más falta hacía
+      // registrar, porque no se puede reconstruir desde ninguna otra tabla.
+      const conn = await pool.promise().getConnection();
+      try {
+        await marcar(conn, "ajuste", { usuarioId: req.user?.id });
+        await conn.query(
           "UPDATE stock SET cantidad = ?, precio = ? WHERE gusto_id = ? AND sucursal_id = ?",
           [cantidad, precio, gusto_id, sucursal_id]
         );
+      } finally {
+        await limpiar(conn).catch(() => {});
+        conn.release();
+      }
     }
 
     res.json({ mensaje: "Actualización realizada correctamente ✅" });

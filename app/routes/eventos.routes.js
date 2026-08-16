@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
+const { marcar, limpiar } = require("../movimientos");
 
 const CENTRAL_ID = 7;
 
@@ -135,10 +136,12 @@ router.post("/eventos", authenticate, soloAdmin, async (req, res) => {
         "INSERT INTO evento_items (evento_id, gusto_id, cantidad_llevada, precio) VALUES (?, ?, ?, ?)",
         [ev.insertId, it.gustoId, it.cantidad, it.precio]
       );
+      await marcar(conn, "evento_salida", { referencia: `evento ${ev.insertId}`, usuarioId: req.user?.id });
       await conn.query(
         "UPDATE stock SET cantidad = cantidad - ? WHERE sucursal_id = ? AND gusto_id = ?",
         [it.cantidad, CENTRAL_ID, it.gustoId]
       );
+      await limpiar(conn);
     }
 
     for (const [i, l] of logosLimpios.entries()) {
@@ -351,10 +354,12 @@ router.post("/eventos/:id/cerrar", authenticate, soloAdmin, async (req, res) => 
         [vuelven, directas, precioDirecto, it.id]
       );
       if (vuelven > 0) {
+        await marcar(conn, "evento_devolucion", { referencia: `evento ${ev.id}`, usuarioId: req.user?.id });
         await conn.query(
           "UPDATE stock SET cantidad = cantidad + ? WHERE sucursal_id = ? AND gusto_id = ?",
           [vuelven, ev.sucursal_origen_id, it.gusto_id]
         );
+        await limpiar(conn);
       }
     }
 

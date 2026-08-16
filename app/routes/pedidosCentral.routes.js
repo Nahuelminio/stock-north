@@ -2,6 +2,7 @@ const express    = require("express");
 const router     = express.Router();
 const pool       = require("../db");
 const authenticate = require("../middlewares/authenticate");
+const { marcar, limpiar } = require("../movimientos");
 
 const CENTRAL_ID = 7;
 const { avisarTelegram } = require("../services/telegram");
@@ -216,10 +217,12 @@ router.post("/pedidos-central/:id/confirmar", authenticate, soloAdmin, async (re
       }
 
       // Descontar stock
+      await marcar(conn, "venta_publica", { referencia: `pedido web ${pedido.id}`, usuarioId: req.user?.id });
       await conn.query(
         "UPDATE stock SET cantidad = cantidad - ? WHERE gusto_id = ? AND sucursal_id = ?",
         [item.qty, item.gusto_id, CENTRAL_ID]
       );
+      await limpiar(conn);
 
       // Registrar venta
       await conn.query(

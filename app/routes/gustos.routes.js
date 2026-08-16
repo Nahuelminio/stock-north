@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../db");
+const { marcar, limpiar } = require("../movimientos");
 
 // Editar gusto (nombre y código de barra)
 router.post(

@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
+const { marcar, limpiar } = require("../movimientos");
 
 function nowMysql() {
   return new Date().toISOString().slice(0, 19).replace("T", " ");
@@ -161,6 +162,7 @@ router.post("/:id/confirmar", authenticate, soloAdmin, async (req, res) => {
 
     for (const item of items) {
       // Descontar de origen — atómico: falla si no hay suficiente stock
+      await marcar(conn, "transferencia_salida", { referencia: `transf ${req.params.id}`, usuarioId: req.user?.id });
       const [upd] = await conn.query(
         `UPDATE stock
          SET cantidad = cantidad - ?
@@ -191,12 +193,14 @@ router.post("/:id/confirmar", authenticate, soloAdmin, async (req, res) => {
 
       // Sumar en destino — upsert atómico (requiere UNIQUE KEY (gusto_id, sucursal_id) en stock)
       // Si la fila ya existe, solo suma cantidad (no pisa el precio que ya tiene la sucursal destino)
+      await marcar(conn, "transferencia_entrada", { referencia: `transf ${req.params.id}`, usuarioId: req.user?.id });
       await conn.query(
         `INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio)
          VALUES (?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE cantidad = cantidad + VALUES(cantidad)`,
         [item.gusto_id, t.sucursal_destino_id, item.cantidad, precioOrigen]
       );
+      await limpiar(conn);
     }
 
     await conn.query(

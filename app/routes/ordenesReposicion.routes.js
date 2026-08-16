@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
+const { marcar, limpiar } = require("../movimientos");
 
 const soloAdmin = (req, res, next) => {
   if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo administradores" });

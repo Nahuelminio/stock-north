@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
+const { marcar, limpiar } = require("../movimientos");
 
 router.use(authenticate);
 
@@ -403,10 +404,12 @@ router.post("/pedidos/:id/confirmar", async (req, res) => {
       }
 
       // UPDATE atómico: solo descuenta si la cantidad sigue siendo suficiente
+      await marcar(conn, "mayorista", { referencia: `pedido ${pedido.id}`, usuarioId: req.user?.id });
       const [upd] = await conn.query(
         "UPDATE stock SET cantidad = cantidad - ? WHERE gusto_id = ? AND sucursal_id = ? AND cantidad >= ?",
         [item.cantidad, item.gusto_id, pedido.sucursal_id, item.cantidad]
       );
+      await limpiar(conn);
 
       if (!upd.affectedRows) {
         await conn.rollback();

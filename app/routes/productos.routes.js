@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
+const { marcar, limpiar } = require("../movimientos");
 const authorizeAdmin = require("../middlewares/authorizeAdmin");
 
 // Obtener todos los productos

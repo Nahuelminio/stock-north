@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
+const { marcar, limpiar } = require("../movimientos");
 
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_VENTAS || "";
 
@@ -61,10 +62,12 @@ router.post("/vender", authenticate, async (req, res) => {
     }
 
     // Descontar stock
+    await marcar(conn, "venta", { usuarioId: req.user?.id });
     await conn.query(
       "UPDATE stock SET cantidad = cantidad - ? WHERE gusto_id = ? AND sucursal_id = ?",
       [cantidad, gustoId, sucursalIdFinal]
     );
+    await limpiar(conn);
 
     const precioFinal = (precioCustom != null && !isNaN(precioCustom) && precioCustom >= 0)
       ? precioCustom : stockRow.precio;

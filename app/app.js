@@ -57,6 +57,7 @@ app.use("/", require("./routes/pedidosCentral.routes"));
 app.use("/", require("./routes/shisha.routes"));
 app.use("/", require("./routes/eventos.routes"));
 app.use("/", require("./routes/metricas.routes"));
+app.use("/", require("./routes/movimientos.routes"));
 
 
 
