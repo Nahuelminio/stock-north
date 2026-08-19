@@ -22,6 +22,17 @@ function parseFechaFlexible(fechaStr) {
     const II = Number(m[5] || 0);
     return new Date(yyyy, mm, dd, HH, II, 0);
   }
+  // El formulario manda la fecha como yyyy-mm-dd, que no entra en el patrón de
+  // arriba. Con `new Date("2026-08-16")` JavaScript la toma como medianoche UTC,
+  // que acá son las 21 del día anterior: aprobar un comprobante le corría el
+  // día para atrás. Se arma en horario local.
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{1,2}):(\d{2}))?$/);
+  if (iso) {
+    return new Date(
+      Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]),
+      Number(iso[4] || 0), Number(iso[5] || 0), 0
+    );
+  }
   const d = new Date(s);
   return isNaN(d.getTime()) ? new Date() : d;
 }
@@ -159,18 +170,26 @@ router.get("/historial-pagos", authenticate, async (req, res) => {
   try {
     // Si el pago tiene comprobante adjunto es porque lo cargó la sucursal por
     // foto; si no, lo registró el admin a mano.
+    // Los pagos de los vendedores no tienen sucursal, y con un JOIN normal
+    // quedaban afuera del historial: 52 pagos que nunca se veían. Va LEFT JOIN
+    // y se trae también el vendedor.
     let query = `
       SELECT
-        p.id, s.nombre AS sucursal, p.metodo, p.monto, p.fecha, p.estado,
-        p.referencia,
+        p.id, s.nombre AS sucursal, p.vendedor_id, u.email AS vendedor,
+        p.metodo, p.monto, p.fecha, p.estado, p.referencia,
         (SELECT COUNT(*) FROM pagos_comprobantes c WHERE c.pago_id = p.id) > 0
           AS por_comprobante
       FROM pagos p
-      JOIN sucursales s ON p.sucursal_id = s.id
+      LEFT JOIN sucursales s ON s.id = p.sucursal_id
+      LEFT JOIN usuarios u   ON u.id = p.vendedor_id
       WHERE p.estado = 'ok'
     `;
     const params = [];
-    if (rol !== "admin") {
+    if (rol === "vendedor") {
+      // El vendedor ve sólo lo suyo
+      query += " AND p.vendedor_id = ?";
+      params.push(req.user.id);
+    } else if (rol !== "admin") {
       query += " AND p.sucursal_id = ?";
       params.push(sucursalId);
     }
@@ -506,22 +525,46 @@ router.patch("/pagos/:id/revisar", authenticate, async (req, res) => {
       parser_json: nuevo.parser_json,
     });
 
-    await conn.query(
-      `UPDATE pagos
-       SET sucursal_id=?, metodo=?, monto=?, fecha=?, referencia=?, imagen_url=?, estado=?, hash_unico=?
-       WHERE id=?`,
-      [
-        nuevo.sucursal_id || null,
-        nuevo.metodo,
-        nuevo.monto,
-        nuevo.fecha,
-        nuevo.referencia || null,
-        nuevo.imagen_url || null,
-        nuevo.estado,
-        hash_unico,
-        id,
-      ]
-    );
+    // Cuando el comprobante no trae número de operación, la huella se calcula
+    // con una ventana de 10 minutos. Pero si el OCR tampoco pudo leer la hora,
+    // la fecha queda en medianoche y entonces dos pagos del mismo monto en el
+    // mismo día dan siempre la misma huella, aunque sean pagos distintos.
+    // Con `forzar` el admin confirma que es otro pago y se desempata con el id.
+    const hashFinal = req.body.forzar ? sha256(`${hash_unico}|pago|${id}`) : hash_unico;
+
+    try {
+      await conn.query(
+        `UPDATE pagos
+         SET sucursal_id=?, metodo=?, monto=?, fecha=?, referencia=?, imagen_url=?, estado=?, hash_unico=?
+         WHERE id=?`,
+        [
+          nuevo.sucursal_id || null,
+          nuevo.metodo,
+          nuevo.monto,
+          nuevo.fecha,
+          nuevo.referencia || null,
+          nuevo.imagen_url || null,
+          nuevo.estado,
+          hashFinal,
+          id,
+        ]
+      );
+    } catch (e) {
+      if (e.code !== "ER_DUP_ENTRY") throw e;
+      // Se avisa contra cuál choca para que se pueda comparar antes de decidir
+      const [[gemelo]] = await conn.query(
+        "SELECT id, monto, fecha, metodo FROM pagos WHERE hash_unico = ? AND id <> ? LIMIT 1",
+        [hashFinal, id]
+      );
+      conn.release();
+      return res.status(409).json({
+        error: gemelo
+          ? `Esto parece el mismo pago que el #${gemelo.id} (mismo monto y misma fecha, y ninguno tiene número de operación). Si es otro pago, confirmalo.`
+          : "Este pago parece duplicado de otro ya registrado.",
+        duplicado_de: gemelo?.id || null,
+        puede_forzar: true,
+      });
+    }
 
     conn.release();
     res.json({ mensaje: "✅ Pago actualizado" });
