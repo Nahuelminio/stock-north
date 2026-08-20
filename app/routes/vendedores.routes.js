@@ -374,6 +374,114 @@ router.get("/:id/pagos", authenticate, soloAdmin, async (req, res) => {
 });
 
 /**
+ * GET /vendedores/conciliacion?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
+ *
+ * Compara, día por día, lo que vendió cada vendedor contra lo que rindió.
+ * Sirve para darse cuenta de un comprobante que quedó sin mandar: el total
+ * general no alcanza, porque suelen pagar al día siguiente y sobre la semana
+ * se compensa.
+ *
+ * `hasta` es exclusivo. Cuenta los pagos con comprobante y también los que
+ * carga el admin a mano cuando le pagan en efectivo.
+ */
+router.get("/conciliacion", authenticate, soloAdmin, async (req, res) => {
+  const { desde, hasta } = req.query;
+  if (!desde || !hasta) {
+    return res.status(400).json({ error: "Faltan las fechas (desde y hasta)" });
+  }
+
+  try {
+    const [vendedores] = await pool.promise().query(
+      "SELECT id, email FROM usuarios WHERE rol = 'vendedor' ORDER BY email"
+    );
+
+    const [ventas] = await pool.promise().query(
+      `SELECT vendedor_id, DATE(fecha) AS dia,
+              SUM(cantidad) AS unidades,
+              SUM(cantidad * COALESCE(precio_unitario, 0)) AS total
+         FROM ventas
+        WHERE vendedor_id IS NOT NULL AND fecha >= ? AND fecha < ?
+        GROUP BY vendedor_id, DATE(fecha)`,
+      [desde, hasta]
+    );
+
+    const [pagos] = await pool.promise().query(
+      `SELECT p.vendedor_id, DATE(p.fecha) AS dia, p.estado,
+              COUNT(*) AS cantidad,
+              SUM(p.monto) AS total,
+              SUM((SELECT COUNT(*) FROM pagos_comprobantes c WHERE c.pago_id = p.id) > 0) AS con_comprobante
+         FROM pagos p
+        WHERE p.vendedor_id IS NOT NULL AND p.fecha >= ? AND p.fecha < ?
+        GROUP BY p.vendedor_id, DATE(p.fecha), p.estado`,
+      [desde, hasta]
+    );
+
+    // Saldo de arrastre: lo que ya venía debiendo antes del período, para que
+    // un pago del lunes por una venta del domingo no se lea como faltante.
+    const [previo] = await pool.promise().query(
+      `SELECT u.id,
+         COALESCE((SELECT SUM(v.cantidad * COALESCE(v.precio_unitario,0)) FROM ventas v
+                    WHERE v.vendedor_id = u.id AND v.fecha < ?), 0) AS vendido,
+         COALESCE((SELECT SUM(p.monto) FROM pagos p
+                    WHERE p.vendedor_id = u.id AND p.fecha < ? AND p.estado = 'ok'), 0) AS pagado
+       FROM usuarios u WHERE u.rol = 'vendedor'`,
+      [desde, desde]
+    );
+    const arrastre = Object.fromEntries(
+      previo.map((p) => [p.id, Number(p.vendido) - Number(p.pagado)])
+    );
+
+    const dia = (d) => new Date(d).toISOString().slice(0, 10);
+
+    const resultado = vendedores.map((v) => {
+      const mias = ventas.filter((x) => x.vendedor_id === v.id);
+      const pagosMios = pagos.filter((x) => x.vendedor_id === v.id);
+      const dias = [...new Set([...mias.map((x) => dia(x.dia)), ...pagosMios.map((x) => dia(x.dia))])].sort();
+
+      const detalle = dias.map((d) => {
+        const vd = mias.find((x) => dia(x.dia) === d);
+        const ok = pagosMios.filter((x) => dia(x.dia) === d && x.estado === "ok");
+        const pend = pagosMios.filter((x) => dia(x.dia) === d && x.estado !== "ok");
+        const vendido = Number(vd?.total || 0);
+        const pagado = ok.reduce((a, x) => a + Number(x.total), 0);
+        return {
+          dia: d,
+          unidades: Number(vd?.unidades || 0),
+          vendido,
+          pagado,
+          pendiente: pend.reduce((a, x) => a + Number(x.total), 0),
+          comprobantes: ok.reduce((a, x) => a + Number(x.con_comprobante), 0),
+          pagos_cargados: ok.reduce((a, x) => a + Number(x.cantidad), 0),
+          diferencia: vendido - pagado,
+        };
+      });
+
+      const vendido = detalle.reduce((a, x) => a + x.vendido, 0);
+      const pagado = detalle.reduce((a, x) => a + x.pagado, 0);
+      const pendiente = detalle.reduce((a, x) => a + x.pendiente, 0);
+
+      return {
+        id: v.id,
+        email: v.email,
+        vendido,
+        pagado,
+        pendiente,
+        // Lo del período más lo que ya debía de antes
+        falta: vendido - pagado - pendiente,
+        arrastre: arrastre[v.id] || 0,
+        unidades: detalle.reduce((a, x) => a + x.unidades, 0),
+        detalle,
+      };
+    });
+
+    res.json({ desde, hasta, vendedores: resultado });
+  } catch (e) {
+    console.error("❌ Error GET /vendedores/conciliacion:", e);
+    res.status(500).json({ error: "No se pudo armar la conciliación" });
+  }
+});
+
+/**
  * GET /vendedores/ventas/detalle?semana=X&anio=Y  (o mes=X&anio=Y)
  * Devuelve todas las ventas de todos los vendedores con producto y sabor
  */
