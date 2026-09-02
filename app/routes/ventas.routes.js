@@ -138,16 +138,21 @@ router.get("/ventas-mensuales", authenticate, async (req, res) => {
     return res.status(400).json({ error: "Faltan parámetros mes y año" });
 
   try {
+    // Las ventas de vendedores tienen la sucursal cargada, asi que quedaban
+    // sumadas dentro de ella y no se veia cuanto vendia cada uno. Salen aparte,
+    // con tipo='vendedor'; el total general no cambia.
     let sql = `
       SELECT 
         s.id AS sucursal_id,
         s.nombre AS sucursal,
+        'sucursal' AS tipo,
         SUM(v.cantidad) AS total_ventas,
         SUM(v.cantidad * COALESCE(v.precio_unitario, st.precio, 0)) AS total_facturado
       FROM ventas v
       JOIN sucursales s ON v.sucursal_id = s.id
       LEFT JOIN stock st ON st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id
       WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?
+        AND v.vendedor_id IS NULL
     `;
     const params = [Number(mes), Number(anio)];
 
@@ -156,7 +161,32 @@ router.get("/ventas-mensuales", authenticate, async (req, res) => {
       params.push(Number(sucursalId));
     }
 
-    sql += " GROUP BY s.id, s.nombre ORDER BY s.nombre";
+    sql += " GROUP BY s.id, s.nombre";
+
+    let sqlVend = `
+      SELECT
+        NULL AS sucursal_id,
+        COALESCE(NULLIF(TRIM(u.nombre), ''), SUBSTRING_INDEX(u.email, '@', 1)) AS sucursal,
+        'vendedor' AS tipo,
+        SUM(v.cantidad) AS total_ventas,
+        SUM(v.cantidad * COALESCE(v.precio_unitario, st.precio, 0)) AS total_facturado
+      FROM ventas v
+      JOIN usuarios u ON u.id = v.vendedor_id
+      LEFT JOIN stock st ON st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id
+      WHERE MONTH(v.fecha) = ? AND YEAR(v.fecha) = ?
+        AND v.vendedor_id IS NOT NULL
+    `;
+    params.push(Number(mes), Number(anio));
+
+    // Una sucursal solo ve los vendedores que le venden a ella
+    if (rol !== "admin") {
+      sqlVend += " AND v.sucursal_id = ?";
+      params.push(Number(sucursalId));
+    }
+
+    sqlVend += " GROUP BY u.id, sucursal";
+
+    sql = sql + " UNION ALL " + sqlVend + " ORDER BY tipo, sucursal";
     const [rows] = await pool.promise().query(sql, params);
     res.json(rows);
   } catch (e) {
