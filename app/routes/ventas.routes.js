@@ -24,11 +24,21 @@ router.post("/vender", authenticate, async (req, res) => {
 
   // sucursalIdFinal: sucursal donde ocurre la venta / se descuenta el stock
   // - admin:    usa lo que manda en body
-  // - vendedor: usa lo que manda en body (puede vender desde cualquier sucursal)
+  // - vendedor: bloqueado a la sucursal de su usuario, igual que una sucursal.
+  //   Antes tomaba lo que viniera en el body y eso permitia cargar una venta
+  //   contra cualquier sucursal por error.
   // - sucursal: bloqueado a su propia sucursal del token
-  const sucursalIdFinal = (rol === "admin" || esVendedor)
+  const sucursalIdFinal = rol === "admin"
     ? sucursalIdBody
     : Number(sucursalIdDesdeToken);
+
+  // Un vendedor sin sucursal asignada no puede vender: la venta quedaria sin
+  // sucursal y el stock no se descontaria de ningun lado.
+  if (esVendedor && !sucursalIdFinal) {
+    return res.status(400).json({
+      error: "Tu usuario no tiene una sucursal asignada. Avisale al administrador.",
+    });
+  }
 
   // vendedor_id: identifica quién vendió (solo para vendedores)
   const vendedorId = esVendedor ? userId : null;
