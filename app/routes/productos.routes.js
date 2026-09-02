@@ -485,6 +485,72 @@ router.get("/verificar-codigo", authenticate, async (req, res) => {
   }
 });
 
+// 🔵 Planilla de control de stock — modelo y gusto en columnas separadas,
+// ordenada por modelo, para imprimir y contar a mano contra el sistema.
+// El nombre del producto ya lleva guiones ("BC15000 - 15.000 puffs"), así que
+// modelo y gusto no se pueden separar del lado del front: van desde acá.
+router.get("/pods-por-sucursal/planilla", authenticate, async (req, res) => {
+  const { rol, sucursalId } = req.user;
+  const isAdmin = String(rol).toLowerCase() === "admin";
+
+  const { sucursal_id, q, solo_con_stock } = req.query;
+  const onlyStock = String(solo_con_stock ?? "1") !== "0";
+
+  const where = [];
+  const params = [];
+
+  if (!isAdmin) {
+    where.push("s.id = ?");
+    params.push(Number(sucursalId));
+  } else if (sucursal_id) {
+    const sid = Number(sucursal_id);
+    if (Number.isFinite(sid) && sid > 0) {
+      where.push("s.id = ?");
+      params.push(sid);
+    }
+  }
+
+  if (q && String(q).trim()) {
+    const like = `%${String(q).trim().slice(0, 100)}%`;
+    where.push("(p.nombre LIKE ? OR g.nombre LIKE ? OR g.codigo_barra LIKE ?)");
+    params.push(like, like, like);
+  }
+
+  const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
+
+  // Hay productos y gustos duplicados que sólo difieren en tabuladores o saltos
+  // de línea invisibles en el nombre. TRIM() de MySQL sólo saca espacios, así
+  // que se limpian a mano y se agrupa por el nombre normalizado, no por id:
+  // en una planilla de conteo el mismo modelo tiene que salir en un solo bloque.
+  const NORM = (col) =>
+    `TRIM(REPLACE(REPLACE(REPLACE(${col}, '\\t', ' '), '\\r', ' '), '\\n', ' '))`;
+
+  const sql = `
+    SELECT
+      s.id     AS sucursal_id,
+      s.nombre AS sucursal,
+      ${NORM("p.nombre")} AS modelo,
+      ${NORM("g.nombre")} AS gusto,
+      SUM(st.cantidad) AS cantidad
+    FROM productos p
+    JOIN gustos g      ON g.producto_id = p.id
+    JOIN stock  st     ON st.gusto_id   = g.id
+    JOIN sucursales s  ON s.id          = st.sucursal_id
+    ${whereSql}
+    GROUP BY s.id, s.nombre, modelo, gusto
+    ${onlyStock ? "HAVING SUM(st.cantidad) > 0" : ""}
+    ORDER BY s.nombre, modelo, gusto
+  `;
+
+  try {
+    const [rows] = await pool.promise().query(sql, params);
+    res.json(rows);
+  } catch (e) {
+    console.error("❌ Error en /pods-por-sucursal/planilla:", e);
+    res.status(500).json({ error: "Error al generar la planilla" });
+  }
+});
+
 // 🔵 Pods por sucursal (agrupado) — admite filtros q, sucursal_id, solo_con_stock
 router.get("/pods-por-sucursal", authenticate, async (req, res) => {
   const { rol, sucursalId } = req.user;
