@@ -175,7 +175,7 @@ router.get("/historial-pagos", authenticate, async (req, res) => {
     // y se trae también el vendedor.
     let query = `
       SELECT
-        p.id, s.nombre AS sucursal, p.vendedor_id, u.email AS vendedor,
+        p.id, s.nombre AS sucursal, p.vendedor_id, COALESCE(NULLIF(TRIM(u.nombre), ''), SUBSTRING_INDEX(u.email, '@', 1)) AS vendedor,
         p.metodo, p.monto, p.fecha, p.estado, p.referencia,
         (SELECT COUNT(*) FROM pagos_comprobantes c WHERE c.pago_id = p.id) > 0
           AS por_comprobante
@@ -285,7 +285,8 @@ router.get("/resumen-pagos-sucursal", authenticate, async (req, res) => {
         "SELECT email FROM usuarios WHERE id = ?",
         [userId]
       );
-      if (u?.email) nombreLabel = u.email.split("@")[0];
+      if (u?.nombre?.trim()) nombreLabel = u.nombre.trim();
+      else if (u?.email) nombreLabel = u.email.split("@")[0];
 
       // Vendedores: facturado por vendedor_id (puede haber vendido desde varias sucursales)
       const [[fila]] = await pool.promise().query(
@@ -843,7 +844,7 @@ router.get("/pagos/pendientes", authenticate, async (req, res) => {
     const { rol, sucursalId, id: userId } = req.user;
     let sql = `
       SELECT p.*, s.nombre AS sucursal,
-        u.email AS vendedor,
+        COALESCE(NULLIF(TRIM(u.nombre), ''), SUBSTRING_INDEX(u.email, '@', 1)) AS vendedor,
         r.ocr_confianza, r.parser_json,
         (SELECT COUNT(*) FROM pagos_comprobantes c WHERE c.pago_id = p.id) AS tiene_imagen
       FROM pagos p

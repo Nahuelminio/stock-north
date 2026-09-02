@@ -44,7 +44,7 @@ function getSemanaActual() {
 router.get("/lista", authenticate, soloAdmin, async (req, res) => {
   try {
     const [rows] = await pool.promise().query(`
-      SELECT u.id, u.email, u.sucursal_id, s.nombre AS sucursal_nombre
+      SELECT u.id, u.email, COALESCE(NULLIF(TRIM(u.nombre), ''), SUBSTRING_INDEX(u.email, '@', 1)) AS nombre, u.sucursal_id, s.nombre AS sucursal_nombre
       FROM usuarios u
       LEFT JOIN sucursales s ON s.id = u.sucursal_id
       WHERE u.rol = 'vendedor'
@@ -81,7 +81,7 @@ router.get("/resumen-semana", authenticate, soloAdmin, async (req, res) => {
 
     // 1. Traer todos los vendedores
     const [vendedores] = await pool.promise().query(`
-      SELECT u.id, u.email, u.sucursal_id, s.nombre AS sucursal_nombre
+      SELECT u.id, u.email, COALESCE(NULLIF(TRIM(u.nombre), ''), SUBSTRING_INDEX(u.email, '@', 1)) AS nombre, u.sucursal_id, s.nombre AS sucursal_nombre
       FROM usuarios u
       LEFT JOIN sucursales s ON s.id = u.sucursal_id
       WHERE u.rol = 'vendedor'
@@ -140,6 +140,7 @@ router.get("/resumen-semana", authenticate, soloAdmin, async (req, res) => {
       return {
         id: v.id,
         email: v.email,
+        nombre: v.nombre,
         sucursal_nombre: v.sucursal_nombre,
         total_pares: totalPares,
         total_monto: totalMonto,
@@ -177,7 +178,7 @@ router.get("/resumen-mes", authenticate, soloAdmin, async (req, res) => {
 
     // 1. Traer todos los vendedores
     const [vendedores] = await pool.promise().query(`
-      SELECT u.id, u.email, u.sucursal_id, s.nombre AS sucursal_nombre
+      SELECT u.id, u.email, COALESCE(NULLIF(TRIM(u.nombre), ''), SUBSTRING_INDEX(u.email, '@', 1)) AS nombre, u.sucursal_id, s.nombre AS sucursal_nombre
       FROM usuarios u
       LEFT JOIN sucursales s ON s.id = u.sucursal_id
       WHERE u.rol = 'vendedor'
@@ -230,6 +231,7 @@ router.get("/resumen-mes", authenticate, soloAdmin, async (req, res) => {
       return {
         id: v.id,
         email: v.email,
+        nombre: v.nombre,
         sucursal_nombre: v.sucursal_nombre,
         total_pares: totalPares,
         total_monto: totalMonto,
@@ -261,12 +263,12 @@ router.get("/resumen-mes", authenticate, soloAdmin, async (req, res) => {
 router.get("/deudas", authenticate, soloAdmin, async (req, res) => {
   try {
     const [vendedores] = await pool.promise().query(`
-      SELECT u.id, u.email,
+      SELECT u.id, u.email, COALESCE(NULLIF(TRIM(u.nombre), ''), SUBSTRING_INDEX(u.email, '@', 1)) AS nombre,
         COALESCE(SUM(v.cantidad * COALESCE(v.precio_unitario, 0)), 0) AS total_facturado
       FROM usuarios u
       LEFT JOIN ventas v ON v.vendedor_id = u.id
       WHERE u.rol = 'vendedor'
-      GROUP BY u.id, u.email
+      GROUP BY u.id, u.email, u.nombre
       ORDER BY u.email
     `);
 
@@ -286,6 +288,7 @@ router.get("/deudas", authenticate, soloAdmin, async (req, res) => {
       return {
         id:               v.id,
         email:            v.email,
+        nombre:           v.nombre,
         total_facturado:  facturado,
         total_pagado:     pagado,
         deuda:            Number((facturado - pagado).toFixed(2)),
@@ -392,7 +395,9 @@ router.get("/conciliacion", authenticate, soloAdmin, async (req, res) => {
 
   try {
     const [vendedores] = await pool.promise().query(
-      "SELECT id, email FROM usuarios WHERE rol = 'vendedor' ORDER BY email"
+      `SELECT id, email,
+              COALESCE(NULLIF(TRIM(nombre), ''), SUBSTRING_INDEX(email, '@', 1)) AS nombre
+         FROM usuarios WHERE rol = 'vendedor' ORDER BY email`
     );
 
     const [ventas] = await pool.promise().query(
@@ -463,6 +468,7 @@ router.get("/conciliacion", authenticate, soloAdmin, async (req, res) => {
       return {
         id: v.id,
         email: v.email,
+        nombre: v.nombre,
         vendido,
         pagado,
         pendiente,
@@ -517,6 +523,7 @@ router.get("/ventas/detalle", authenticate, soloAdmin, async (req, res) => {
         (v.cantidad * COALESCE(v.precio_unitario, 0)) AS total,
         u.id AS vendedor_id,
         u.email AS vendedor_email,
+        COALESCE(NULLIF(TRIM(u.nombre), ''), SUBSTRING_INDEX(u.email, '@', 1)) AS vendedor_nombre,
         g.id AS gusto_id,
         g.nombre AS sabor,
         p.id AS producto_id,

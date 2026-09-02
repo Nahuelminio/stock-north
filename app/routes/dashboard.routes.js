@@ -140,7 +140,7 @@ router.get("/resumen-ganancias", authenticate, soloAdmin, async (req, res) => {
       -- Vendedores: mismo calculo que una sucursal, pero agrupado por vendedor.
       -- No se duplica nada porque arriba se los excluyo del subtotal de su sucursal.
       SELECT
-        SUBSTRING_INDEX(u.email, '@', 1) AS sucursal,
+        COALESCE(NULLIF(TRIM(u.nombre), ''), SUBSTRING_INDEX(u.email, '@', 1)) AS sucursal,
         ven.ventas       AS total_ventas,
         ven.ventas       AS ventas_regulares,
         0                AS ventas_mayorista,
@@ -228,7 +228,7 @@ router.get("/resumen-ganancias-mensual", authenticate, soloAdmin, async (req, re
       -- Vendedores: mismo calculo que una sucursal, pero agrupado por vendedor.
       -- No se duplica nada porque arriba se los excluyo del subtotal de su sucursal.
       SELECT
-        SUBSTRING_INDEX(u.email, '@', 1) AS sucursal,
+        COALESCE(NULLIF(TRIM(u.nombre), ''), SUBSTRING_INDEX(u.email, '@', 1)) AS sucursal,
         ven.ventas       AS total_ventas,
         ven.ventas       AS ventas_regulares,
         0                AS ventas_mayorista,
