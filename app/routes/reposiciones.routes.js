@@ -465,11 +465,18 @@ router.get("/costos-central", authenticate, async (req, res) => {
         unidades_eventos: 0, comision_eventos: 0, total_eventos: 0,
       };
 
-      const margen_unitario = (precio_venta != null && costo_prom != null)
-        ? precio_venta - costo_prom
+      // costo_prom sale de las reposiciones DEL PERIODO. Un mes sin compras
+      // lo deja en null y la tabla se queda sin margenes aunque el costo del
+      // sabor se conozca de meses anteriores: por eso se cae al costo
+      // historico, que ya esta calculado en costoUnitMap.
+      const costoParaMargen = costo_prom ?? costoUnitMap[r.gusto_id] ?? null;
+      const margen_unitario = (precio_venta != null && costoParaMargen != null)
+        ? precio_venta - costoParaMargen
         : null;
-      const margen_pct = (margen_unitario != null && costo_prom > 0)
-        ? (margen_unitario / costo_prom) * 100
+      // Sobre el precio de venta, no sobre el costo: asi coincide con
+      // Metricas, el Dashboard y el resto de este mismo panel.
+      const margen_pct = (margen_unitario != null && precio_venta > 0)
+        ? (margen_unitario / precio_venta) * 100
         : null;
 
       const unidades_con_costo = Number(r.unidades_con_costo);
@@ -487,8 +494,11 @@ router.get("/costos-central", authenticate, async (req, res) => {
       const costoUnit = costoUnitMap[r.gusto_id] ?? null;
       const costoVendido = costoUnit != null ? costoUnit * unidades_totales : null;
       const gananciaReal = costoVendido != null ? facturado - costoVendido : null;
+      // Margen sobre lo facturado, no sobre el costo: es como lo calculan
+      // Metricas y el Dashboard. Sobre el costo daba unos puntos mas alto y
+      // las pantallas no coincidian.
       const margenRealPct =
-        costoVendido > 0 ? (gananciaReal / costoVendido) * 100 : null;
+        facturado > 0 && costoVendido != null ? (gananciaReal / facturado) * 100 : null;
 
       return {
         gusto_id: r.gusto_id,
@@ -566,15 +576,15 @@ router.get("/costos-central", authenticate, async (req, res) => {
       (totales.facturado_con_costo - totales.costo_vendido).toFixed(2)
     );
     totales.margen_real_pct = totales.costo_vendido > 0
-      ? Number(((totales.ganancia_real / totales.costo_vendido) * 100).toFixed(1))
+      ? Number(((totales.ganancia_real / totales.facturado_con_costo) * 100).toFixed(1))
       : null;
     // Facturación de sabores sin costo cargado: no entra en el margen real
     totales.facturado_sin_costo = Number(
       (totales.total_facturado - totales.facturado_con_costo).toFixed(2)
     );
     totales.ganancia_estimada = Number((totales.total_facturado - totales.costo_total).toFixed(2));
-    totales.margen_pct = totales.costo_total > 0
-      ? Number(((totales.ganancia_estimada / totales.costo_total) * 100).toFixed(1))
+    totales.margen_pct = totales.total_facturado > 0
+      ? Number(((totales.ganancia_estimada / totales.total_facturado) * 100).toFixed(1))
       : null;
 
     res.json({ productos: resultado, totales });
