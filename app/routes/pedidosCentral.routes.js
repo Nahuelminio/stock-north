@@ -3,6 +3,7 @@ const router     = express.Router();
 const pool       = require("../db");
 const authenticate = require("../middlewares/authenticate");
 const { marcar, limpiar } = require("../movimientos");
+const { avisarVenta } = require("../services/telegram");
 
 const CENTRAL_ID = 7;
 const { avisarTelegram } = require("../services/telegram");
@@ -240,6 +241,28 @@ router.post("/pedidos-central/:id/confirmar", authenticate, soloAdmin, async (re
 
     await conn.commit();
     res.json({ ok: true, mensaje: "Pedido confirmado — stock actualizado y ventas registradas" });
+
+    // Un aviso por pedido y no uno por producto: un pedido de 5 items mandaría
+    // 5 mensajes seguidos por la misma compra.
+    try {
+      const pesos = (n) => "$" + Math.round(Number(n || 0)).toLocaleString("es-AR");
+      const detalle = (Array.isArray(items) ? items : [])
+        .map((it) => `  ${it.qty} x ${String(it.modelo || "").trim()} - ${it.gusto}`)
+        .join("\n");
+      avisarVenta(
+        [
+          `Pedido de Central confirmado (#${pedido.id})`,
+          pedido.nombre_cliente ? `Cliente: ${pedido.nombre_cliente}` : null,
+          detalle || null,
+          `Total: ${pesos(pedido.total)}`,
+          pedido.metodo_pago ? `Pago: ${pedido.metodo_pago}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n")
+      );
+    } catch (e) {
+      console.error("aviso de pedido central:", e.message || e);
+    }
   } catch (e) {
     await conn.rollback();
     console.error("❌ POST /pedidos-central/:id/confirmar:", e);

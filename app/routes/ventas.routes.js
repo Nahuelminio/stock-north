@@ -3,6 +3,7 @@ const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
 const { marcar, limpiar } = require("../movimientos");
+const { avisarVenta } = require("../services/telegram");
 
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_VENTAS || "";
 
@@ -97,18 +98,52 @@ router.post("/vender", authenticate, async (req, res) => {
       precio_unitario: precioFinal,
     });
 
-    // Fire-and-forget a n8n — usa pool (conn ya fue liberada en finally)
-    if (N8N_WEBHOOK_URL) {
-      pool.promise().query(
-        `SELECT g.nombre AS gusto_nombre, p.nombre AS modelo_nombre, s.nombre AS sucursal_nombre
+    // Aviso por Telegram y webhook a n8n — usa pool (conn ya fue liberada en
+    // finally). Una sola consulta para los dos: nombres, quién vendió y lo que
+    // queda en esa sucursal. Fire-and-forget: si algo falla, la venta ya está.
+    pool
+      .promise()
+      .query(
+        `SELECT g.nombre AS gusto_nombre, p.nombre AS modelo_nombre, s.nombre AS sucursal_nombre,
+                COALESCE(NULLIF(TRIM(u.nombre), ''), SUBSTRING_INDEX(u.email, '@', 1)) AS vendedor_nombre,
+                (SELECT st.cantidad FROM stock st
+                  WHERE st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id) AS quedan
          FROM ventas v
          JOIN gustos g    ON v.gusto_id = g.id
          JOIN productos p ON g.producto_id = p.id
          JOIN sucursales s ON v.sucursal_id = s.id
+         LEFT JOIN usuarios u ON u.id = v.vendedor_id
          WHERE v.id = ?`,
         [ins.insertId]
-      ).then(([rows]) => {
+      )
+      .then(([rows]) => {
         const info = rows?.[0] || {};
+        const limpio = (t) => String(t || "").replace(/\s+/g, " ").trim();
+        const pesos = (n) =>
+          "$" + Math.round(Number(n || 0)).toLocaleString("es-AR");
+        const total = Number(precioFinal || 0) * Number(cantidad || 0);
+        const quedan = info.quedan == null ? null : Number(info.quedan);
+
+        avisarVenta(
+          [
+            `Venta en ${limpio(info.sucursal_nombre) || "sucursal " + sucursalIdFinal}`,
+            limpio(info.modelo_nombre),
+            info.gusto_nombre ? `Sabor: ${limpio(info.gusto_nombre)}` : null,
+            `${cantidad} x ${pesos(precioFinal)} = ${pesos(total)}`,
+            info.vendedor_nombre ? `Vendio: ${limpio(info.vendedor_nombre)}` : null,
+            quedan == null
+              ? null
+              : quedan === 0
+              ? "SIN STOCK de ese sabor en esa sucursal"
+              : quedan <= 2
+              ? `Quedan solo ${quedan}`
+              : `Quedan ${quedan}`,
+          ]
+            .filter(Boolean)
+            .join("\n")
+        );
+
+        if (!N8N_WEBHOOK_URL) return;
         return fetch(N8N_WEBHOOK_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -125,10 +160,10 @@ router.post("/vender", authenticate, async (req, res) => {
             sucursal_nombre: info.sucursal_nombre || null,
           }),
         });
-      }).catch((err) => {
-        console.error("n8n ventas error:", err.message || err);
+      })
+      .catch((err) => {
+        console.error("aviso de venta:", err.message || err);
       });
-    }
   } catch (e) {
     await conn.rollback();
     console.error("❌ Error al registrar venta:", e.code || e.message, e);
