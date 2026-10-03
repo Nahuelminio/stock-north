@@ -57,7 +57,7 @@ router.get("/:id", authenticate, soloAdmin, async (req, res) => {
     if (!orden) return res.status(404).json({ error: "Orden no encontrada" });
 
     const [items] = await pool.promise().query(
-      `SELECT i.id, i.gusto_id, i.cantidad, i.precio_costo,
+      `SELECT i.id, i.gusto_id, i.cantidad, i.precio_costo, i.precio_costo_usd,
               g.nombre AS gusto,
               p.nombre AS producto_nombre,
               COALESCE(st.cantidad, 0) AS stock_actual,
@@ -90,9 +90,12 @@ router.post("/", authenticate, soloAdmin, async (req, res) => {
     const [[suc]] = await conn.query("SELECT id FROM sucursales WHERE id = ?", [sucursal_id]);
     if (!suc) { await conn.rollback(); return res.status(400).json({ error: "Sucursal no existe" }); }
 
+    // El dólar al que se compró queda asentado en la orden: después no hay modo
+    // de saber con qué TC se convirtieron los costos.
+    const tipoCambio = Number(req.body.tipo_cambio);
     const [result] = await conn.query(
-      "INSERT INTO ordenes_reposicion (sucursal_id, notas) VALUES (?, ?)",
-      [sucursal_id, notas || null]
+      "INSERT INTO ordenes_reposicion (sucursal_id, notas, tipo_cambio) VALUES (?, ?, ?)",
+      [sucursal_id, notas || null, tipoCambio > 0 ? tipoCambio : null]
     );
     const ordenId = result.insertId;
 
@@ -112,9 +115,22 @@ router.post("/", authenticate, soloAdmin, async (req, res) => {
         }
         precioCosto = pc;
       }
+
+      // El costo en USD es lo que cobra el proveedor y es el dato de origen: la
+      // pantalla lo pide en dólares y lo convierte a pesos con el TC. Antes solo
+      // se guardaba el resultado en pesos y el USD se perdía, que es la razón de
+      // que 552 reposiciones no lo tengan. Si no viene, se deduce del TC.
+      let precioCostoUsd = null;
+      const usdDirecto = Number(item.precio_costo_usd);
+      if (Number.isFinite(usdDirecto) && usdDirecto > 0) {
+        precioCostoUsd = usdDirecto;
+      } else if (precioCosto > 0 && tipoCambio > 0) {
+        precioCostoUsd = Number((precioCosto / tipoCambio).toFixed(2));
+      }
+
       await conn.query(
-        "INSERT INTO orden_reposicion_items (orden_id, gusto_id, cantidad, precio_costo) VALUES (?, ?, ?, ?)",
-        [ordenId, item.gusto_id, item.cantidad, precioCosto]
+        "INSERT INTO orden_reposicion_items (orden_id, gusto_id, cantidad, precio_costo, precio_costo_usd) VALUES (?, ?, ?, ?, ?)",
+        [ordenId, item.gusto_id, item.cantidad, precioCosto, precioCostoUsd]
       );
     }
 
@@ -162,10 +178,11 @@ router.post("/:id/confirmar", authenticate, soloAdmin, async (req, res) => {
         [item.gusto_id, orden.sucursal_id, item.cantidad, precio]
       );
 
-      // Registrar en historial de reposiciones (con precio_costo si existe)
+      // Registrar en historial de reposiciones, con los dos costos si existen
       await conn.query(
-        "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, precio_costo, fecha) VALUES (?, ?, ?, ?, NOW())",
-        [item.gusto_id, orden.sucursal_id, item.cantidad, item.precio_costo ?? null]
+        "INSERT INTO reposiciones (gusto_id, sucursal_id, cantidad_repuesta, precio_costo, precio_costo_usd, fecha) VALUES (?, ?, ?, ?, ?, NOW())",
+        [item.gusto_id, orden.sucursal_id, item.cantidad,
+         item.precio_costo ?? null, item.precio_costo_usd ?? null]
       );
     }
 
