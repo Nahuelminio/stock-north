@@ -657,6 +657,11 @@ router.patch("/costos-central/:gustoId", authenticate, async (req, res) => {
  * principal es el de la última reposición y va acompañado del rango histórico.
  * El USD es lo que cobra el proveedor y no debería moverse: si el rango se
  * abre, subieron el precio. Solo admin.
+ *
+ * Ordena por lo que hay en stock hoy en la Central: lo que tengo para vender
+ * es lo que uno viene a mirar, y las compras viejas de algo agotado estorban.
+ * Ojo: "unidades" es todo lo que se compró alguna vez, no lo que queda; el
+ * stock de hoy sale de la tabla stock y es una cosa distinta.
  */
 router.get("/costos-central/lista", authenticate, async (req, res) => {
   if (req.user?.rol !== "admin") {
@@ -672,6 +677,12 @@ router.get("/costos-central/lista", authenticate, async (req, res) => {
         SUM(r.cantidad_repuesta)  AS unidades,
         MAX(r.fecha)              AS ultima_compra,
 
+        -- Lo que hay hoy en la Central. Va aparte de las reposiciones: si se
+        -- sumara en el mismo JOIN cada compra multiplicaría el stock.
+        COALESCE((SELECT SUM(s.cantidad) FROM stock s
+                  JOIN gustos g3 ON g3.id = s.gusto_id
+                  WHERE g3.producto_id = p.id AND s.sucursal_id = ?), 0) AS stock,
+
         MIN(r.precio_costo) AS costo_min,
         MAX(r.precio_costo) AS costo_max,
         MIN(r.precio_costo_usd) AS usd_min,
@@ -680,6 +691,10 @@ router.get("/costos-central/lista", authenticate, async (req, res) => {
         -- Promedio ponderado: es el que usa el cálculo de margen real
         SUM(r.cantidad_repuesta * r.precio_costo) /
           NULLIF(SUM(CASE WHEN r.precio_costo IS NOT NULL THEN r.cantidad_repuesta END), 0) AS costo_prom,
+
+        -- Promedio en USD, también ponderado por unidades
+        SUM(r.cantidad_repuesta * r.precio_costo_usd) /
+          NULLIF(SUM(CASE WHEN r.precio_costo_usd IS NOT NULL THEN r.cantidad_repuesta END), 0) AS usd_prom,
 
         -- Última compra con costo cargado, que es lo que costaría reponer hoy
         (SELECT r2.precio_costo FROM reposiciones r2
@@ -691,6 +706,14 @@ router.get("/costos-central/lista", authenticate, async (req, res) => {
          WHERE g2.producto_id = p.id AND r2.sucursal_id = ? AND r2.precio_costo_usd IS NOT NULL
          ORDER BY r2.fecha DESC, r2.id DESC LIMIT 1) AS usd_ultimo,
 
+        -- El dólar al que salió la última compra que tiene los dos valores.
+        -- Si está muy lejos del dólar de hoy, el costo en pesos quedó viejo.
+        (SELECT r2.precio_costo / r2.precio_costo_usd FROM reposiciones r2
+         JOIN gustos g2 ON g2.id = r2.gusto_id
+         WHERE g2.producto_id = p.id AND r2.sucursal_id = ?
+           AND r2.precio_costo > 0 AND r2.precio_costo_usd > 0
+         ORDER BY r2.fecha DESC, r2.id DESC LIMIT 1) AS dolar_ultimo,
+
         SUM(r.precio_costo IS NULL)     AS sin_costo,
         SUM(r.precio_costo_usd IS NULL) AS sin_usd,
         COUNT(*) AS repos_total
@@ -699,8 +722,8 @@ router.get("/costos-central/lista", authenticate, async (req, res) => {
       JOIN productos p ON p.id = g.producto_id
       WHERE r.sucursal_id = ?
       GROUP BY p.id, p.nombre
-      ORDER BY p.nombre
-    `, [CENTRAL_ID, CENTRAL_ID, CENTRAL_ID]);
+      ORDER BY (stock > 0) DESC, stock DESC, p.nombre
+    `, [CENTRAL_ID, CENTRAL_ID, CENTRAL_ID, CENTRAL_ID, CENTRAL_ID]);
 
     res.json(rows);
   } catch (e) {
