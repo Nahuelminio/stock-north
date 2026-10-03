@@ -4,6 +4,7 @@ const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
 const { marcar, limpiar } = require("../movimientos");
 const { upsertStock } = require("../controllers/stockHelpers");
+const { dolarEnFecha, dolarHoy, aUsd } = require("../dolar");
 
 // El costo se guarda en pesos y en USD: el de pesos se mueve con el dólar de
 // cada compra, el de USD es lo que realmente cobra el proveedor. Vacío = null,
@@ -701,6 +702,13 @@ router.get("/costos-central/lista", authenticate, async (req, res) => {
          JOIN gustos g2 ON g2.id = r2.gusto_id
          WHERE g2.producto_id = p.id AND r2.sucursal_id = ? AND r2.precio_costo IS NOT NULL
          ORDER BY r2.fecha DESC, r2.id DESC LIMIT 1) AS costo_ultimo,
+
+        -- El dólar del día de esa última compra, para estimar el USD cuando no
+        -- se cargó a mano. Sale del tipo de cambio de los pedidos mayoristas.
+        (SELECT ${dolarEnFecha("r3.fecha")} FROM reposiciones r3
+         JOIN gustos g3b ON g3b.id = r3.gusto_id
+         WHERE g3b.producto_id = p.id AND r3.sucursal_id = ? AND r3.precio_costo IS NOT NULL
+         ORDER BY r3.fecha DESC, r3.id DESC LIMIT 1) AS dolar_del_costo,
         (SELECT r2.precio_costo_usd FROM reposiciones r2
          JOIN gustos g2 ON g2.id = r2.gusto_id
          WHERE g2.producto_id = p.id AND r2.sucursal_id = ? AND r2.precio_costo_usd IS NOT NULL
@@ -723,12 +731,37 @@ router.get("/costos-central/lista", authenticate, async (req, res) => {
       WHERE r.sucursal_id = ?
       GROUP BY p.id, p.nombre
       ORDER BY (stock > 0) DESC, stock DESC, p.nombre
-    `, [CENTRAL_ID, CENTRAL_ID, CENTRAL_ID, CENTRAL_ID, CENTRAL_ID]);
+    `, [CENTRAL_ID, CENTRAL_ID, CENTRAL_ID, CENTRAL_ID, CENTRAL_ID, CENTRAL_ID]);
 
-    res.json(rows);
+    // El USD cargado a mano manda. Si no hay, se estima con el dólar del día de
+    // la compra y se marca como estimado: que la pantalla pueda distinguirlos es
+    // la única manera de que el dato calculado no se confunda con el real.
+    const lista = rows.map((x) => ({
+      ...x,
+      usd_estimado:
+        x.usd_ultimo != null ? null : aUsd(x.costo_ultimo, x.dolar_del_costo),
+    }));
+
+    res.json(lista);
   } catch (e) {
     console.error("❌ Error en GET /costos-central/lista:", e);
     res.status(500).json({ error: "Error al armar la lista de costos" });
+  }
+});
+
+/**
+ * GET /costos-central/dolar
+ * El último dólar que usamos, para completar solo el USD al cargar una compra.
+ * Sale del tipo de cambio del pedido mayorista confirmado más reciente.
+ */
+router.get("/costos-central/dolar", authenticate, async (req, res) => {
+  try {
+    const dolar = await dolarHoy(pool);
+    if (!dolar) return res.json({ dolar: null });
+    res.json({ dolar });
+  } catch (e) {
+    console.error("❌ Error en GET /costos-central/dolar:", e);
+    res.status(500).json({ error: "Error al leer el dólar" });
   }
 });
 
