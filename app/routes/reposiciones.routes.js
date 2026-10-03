@@ -736,13 +736,18 @@ router.get("/costos-central/lista", authenticate, async (req, res) => {
     // El USD cargado a mano manda. Si no hay, se estima con el dólar del día de
     // la compra y se marca como estimado: que la pantalla pueda distinguirlos es
     // la única manera de que el dato calculado no se confunda con el real.
+    // El dólar de hoy sirve para otra pregunta: qué saldría reponer este stock
+    // ahora. No reemplaza al de la fecha de compra, que es lo que se pagó.
+    const { dolar: dolarDeHoy, fuente } = await dolarHoy(pool);
+
     const lista = rows.map((x) => ({
       ...x,
       usd_estimado:
         x.usd_ultimo != null ? null : aUsd(x.costo_ultimo, x.dolar_del_costo),
+      usd_hoy: aUsd(x.costo_ultimo, dolarDeHoy),
     }));
 
-    res.json(lista);
+    res.json({ dolar_hoy: dolarDeHoy, fuente_dolar: fuente, modelos: lista });
   } catch (e) {
     console.error("❌ Error en GET /costos-central/lista:", e);
     res.status(500).json({ error: "Error al armar la lista de costos" });
@@ -751,14 +756,14 @@ router.get("/costos-central/lista", authenticate, async (req, res) => {
 
 /**
  * GET /costos-central/dolar
- * El último dólar que usamos, para completar solo el USD al cargar una compra.
- * Sale del tipo de cambio del pedido mayorista confirmado más reciente.
+ * El dólar de hoy, para completar solo el USD al cargar una compra. Sale de la
+ * cotización en vivo del cripto; si la API no contesta, del último tipo de
+ * cambio que se usó a mano.
  */
 router.get("/costos-central/dolar", authenticate, async (req, res) => {
   try {
-    const dolar = await dolarHoy(pool);
-    if (!dolar) return res.json({ dolar: null });
-    res.json({ dolar });
+    const { dolar, fuente } = await dolarHoy(pool);
+    res.json({ dolar, fuente });
   } catch (e) {
     console.error("❌ Error en GET /costos-central/dolar:", e);
     res.status(500).json({ error: "Error al leer el dólar" });
