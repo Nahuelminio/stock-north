@@ -4,6 +4,7 @@ const pool       = require("../db");
 const authenticate = require("../middlewares/authenticate");
 const { marcar, limpiar } = require("../movimientos");
 const { avisarVenta } = require("../services/telegram");
+const { costosDeGustos, margenPct } = require("../costos");
 
 const CENTRAL_ID = 7;
 const { avisarTelegram } = require("../services/telegram");
@@ -107,6 +108,49 @@ router.get("/pedidos-central/:id/estado", async (req, res) => {
  * Admin — lista de pedidos, por defecto muestra pendientes primero.
  * Query: ?estado=pendiente|confirmado|cancelado|todos
  */
+/**
+ * Le agrega a un pedido lo que costó la mercadería y la ganancia.
+ * Los items viven en JSON, así que el costo se resuelve aparte y no con un JOIN.
+ * Se valúa a la fecha en que se confirmó; si todavía está pendiente, a hoy.
+ */
+async function conCostos(pedido) {
+  const items = typeof pedido.items === "string" ? JSON.parse(pedido.items) : pedido.items;
+  const lista = Array.isArray(items) ? items : [];
+  const costos = await costosDeGustos(
+    pool,
+    lista.map((i) => i.gusto_id),
+    pedido.fecha_confirmacion || new Date()
+  );
+
+  let costoTotal = 0;
+  let unidades = 0;
+  const conCosto = lista.map((i) => {
+    const cant = Number(i.qty ?? i.cantidad) || 0;
+    const costoUnit = costos.get(Number(i.gusto_id)) || 0;
+    const costo = costoUnit * cant;
+    const facturado = (Number(i.precio) || 0) * cant;
+    costoTotal += costo;
+    unidades += cant;
+    return {
+      ...i,
+      costo_unitario: Number(costoUnit.toFixed(2)),
+      costo_total: Number(costo.toFixed(2)),
+      ganancia: Number((facturado - costo).toFixed(2)),
+      margen_pct: margenPct(facturado, facturado - costo),
+    };
+  });
+
+  const facturado = Number(pedido.total) || 0;
+  return {
+    ...pedido,
+    items: conCosto,
+    unidades,
+    costo_total: Number(costoTotal.toFixed(2)),
+    ganancia: Number((facturado - costoTotal).toFixed(2)),
+    margen_pct: margenPct(facturado, facturado - costoTotal),
+  };
+}
+
 router.get("/pedidos-central", authenticate, soloAdmin, async (req, res) => {
   const { estado = "pendiente", page = 1, limit = 50 } = req.query;
   const offset = (Math.max(1, parseInt(page)) - 1) * Math.min(100, parseInt(limit));
@@ -131,11 +175,8 @@ router.get("/pedidos-central", authenticate, soloAdmin, async (req, res) => {
       [...params, parseInt(limit), offset]
     );
 
-    // Parsear items si vienen como string
-    const data = rows.map((r) => ({
-      ...r,
-      items: typeof r.items === "string" ? JSON.parse(r.items) : r.items,
-    }));
+    // Parsear items y agregarles el costo
+    const data = await Promise.all(rows.map(conCostos));
 
     res.json({ data, total, totalPages: Math.ceil(total / parseInt(limit)) });
   } catch (e) {
@@ -169,7 +210,8 @@ router.get("/pedidos-central/:id", authenticate, soloAdmin, async (req, res) => 
       })
     );
 
-    res.json({ ...row, items: itemsConStock });
+    const conCosto = await conCostos({ ...row, items: itemsConStock });
+    res.json(conCosto);
   } catch (e) {
     console.error("❌ GET /pedidos-central/:id:", e);
     res.status(500).json({ error: "Error al obtener el pedido" });

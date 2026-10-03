@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../db");
+const { costoUnitario, costoPromedio, margenPct } = require("../costos");
 const authenticate = require("../middlewares/authenticate");
 const { marcar, limpiar } = require("../movimientos");
 
@@ -123,7 +124,13 @@ router.get("/pedidos", async (req, res) => {
         pm.id, pm.estado, pm.tipo_cambio, pm.total_usd, pm.total_ars,
         pm.notas, pm.fecha_creacion, pm.fecha_confirmacion,
         c.id AS cliente_id, c.nombre AS cliente_nombre, c.telefono AS cliente_telefono,
-        s.nombre AS sucursal_nombre
+        s.nombre AS sucursal_nombre,
+        -- Lo que costó la mercadería de este pedido, valuada a la fecha en que
+        -- se confirmó. Un pedido todavía sin confirmar se valúa a hoy.
+        (SELECT COALESCE(SUM(pmi.cantidad * ${costoUnitario("pmi.gusto_id", "COALESCE(pm.fecha_confirmacion, NOW())")}), 0)
+           FROM pedido_mayorista_items pmi WHERE pmi.pedido_id = pm.id) AS costo_total,
+        (SELECT COALESCE(SUM(pmi.cantidad), 0)
+           FROM pedido_mayorista_items pmi WHERE pmi.pedido_id = pm.id) AS unidades
        FROM pedidos_mayoristas pm
        JOIN clientes   c ON c.id = pm.cliente_id
        JOIN sucursales s ON s.id = pm.sucursal_id
@@ -172,15 +179,46 @@ router.get("/pedidos/:id", async (req, res) => {
 
     const [items] = await pool.promise().query(
       `SELECT pmi.id, pmi.gusto_id, pmi.cantidad, pmi.precio_usd,
-              g.nombre AS gusto, p.nombre AS producto_nombre, g.codigo_barra
+              g.nombre AS gusto, p.nombre AS producto_nombre, g.codigo_barra,
+              ${costoUnitario("pmi.gusto_id", "?")} AS costo_unitario
        FROM pedido_mayorista_items pmi
        JOIN gustos   g ON g.id = pmi.gusto_id
        JOIN productos p ON p.id = g.producto_id
        WHERE pmi.pedido_id = ?`,
-      [pedidoId]
+      // La fecha va dos veces: la usan las dos primeras ramas del COALESCE
+      [pedido.fecha_confirmacion || new Date(),
+       pedido.fecha_confirmacion || new Date(),
+       pedidoId]
     );
 
-    res.json({ ...pedido, items });
+    // El precio del mayorista está en dólares y el costo en pesos: se pasa todo
+    // a pesos con el tipo de cambio del pedido para poder compararlos.
+    const tc = Number(pedido.tipo_cambio) || 0;
+    const conCosto = items.map((it) => {
+      const costoUnit = Number(it.costo_unitario) || 0;
+      const costo = costoUnit * Number(it.cantidad);
+      const facturado = Number(it.precio_usd) * Number(it.cantidad) * tc;
+      return {
+        ...it,
+        costo_unitario: costoUnit,
+        costo_total: Number(costo.toFixed(2)),
+        facturado_ars: Number(facturado.toFixed(2)),
+        ganancia: Number((facturado - costo).toFixed(2)),
+        margen_pct: margenPct(facturado, facturado - costo),
+      };
+    });
+
+    const costoTotal = conCosto.reduce((a, it) => a + it.costo_total, 0);
+    const facturado = Number(pedido.total_ars) || 0;
+
+    res.json({
+      ...pedido,
+      items: conCosto,
+      costo_total: Number(costoTotal.toFixed(2)),
+      ganancia: Number((facturado - costoTotal).toFixed(2)),
+      margen_pct: margenPct(facturado, facturado - costoTotal),
+      unidades: conCosto.reduce((a, it) => a + Number(it.cantidad), 0),
+    });
   } catch (e) {
     console.error("❌ Error obtener pedido:", e);
     res.status(500).json({ error: "Error al obtener pedido" });
