@@ -59,6 +59,7 @@ app.use("/", require("./routes/eventos.routes"));
 app.use("/", require("./routes/metricas.routes"));
 app.use("/", require("./routes/movimientos.routes"));
 app.use("/", require("./routes/costos.routes"));
+app.use("/", require("./routes/telegram.routes"));
 
 
 
