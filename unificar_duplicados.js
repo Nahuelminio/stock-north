@@ -40,6 +40,42 @@ const REFERENCIAS = [
   ["cliente_intereses", "gusto_id"],
 ];
 
+/**
+ * Stock por sucursal, que es lo que no se puede mover de lugar. El total
+ * general podría dar bien y aun así haberse pasado unidades de una sucursal a
+ * otra; esto lo agarra.
+ */
+async function stockPorSucursal(conn) {
+  const [filas] = await conn.query(
+    `SELECT s.id, s.nombre, COALESCE(SUM(st.cantidad), 0) AS unidades
+       FROM sucursales s LEFT JOIN stock st ON st.sucursal_id = s.id
+      GROUP BY s.id, s.nombre ORDER BY s.id`);
+  const m = new Map();
+  for (const f of filas) m.set(f.id, { nombre: f.nombre, unidades: Number(f.unidades) });
+  return m;
+}
+
+/**
+ * Unidades por sucursal y por MODELO, con el nombre normalizado. Como las
+ * copias se unifican, hay que comparar por nombre normalizado y no por
+ * producto_id: el id de las copias desaparece, pero las unidades tienen que
+ * seguir estando en la misma sucursal y en el mismo modelo.
+ */
+async function stockPorSucursalYModelo(conn) {
+  const [filas] = await conn.query(
+    `SELECT st.sucursal_id, p.nombre AS modelo, SUM(st.cantidad) AS unidades
+       FROM stock st
+       JOIN gustos g ON g.id = st.gusto_id
+       JOIN productos p ON p.id = g.producto_id
+      GROUP BY st.sucursal_id, p.nombre`);
+  const m = new Map();
+  for (const f of filas) {
+    const k = `${f.sucursal_id}|${norm(f.modelo)}`;
+    m.set(k, (m.get(k) || 0) + Number(f.unidades));
+  }
+  return m;
+}
+
 async function totales(conn) {
   const uno = async (sql) => (await conn.query(sql))[0][0];
   return {
@@ -59,6 +95,8 @@ async function totales(conn) {
   try {
     await conn.beginTransaction();
     const antes = await totales(conn);
+    const sucAntes = await stockPorSucursal(conn);
+    const modeloAntes = await stockPorSucursalYModelo(conn);
 
     const [prods] = await conn.query(`
       SELECT p.id, p.nombre,
@@ -77,11 +115,26 @@ async function totales(conn) {
     let codigosRescatados = 0, preciosAjustados = 0;
     const destinos = [];
 
-    for (const grupo of [...grupos.values()].filter((v) => v.length > 1)) {
+    // Van TODOS los grupos, no solo los de nombre repetido. Un producto único
+    // puede tener el mismo sabor cargado siete veces —"Baja splash" en el ice
+    // king— y eso parte el stock igual que si fueran productos distintos. De
+    // hecho es el caso más común: 217 grupos de sabores contra 8 de productos.
+    for (const grupo of grupos.values()) {
       const destino = [...grupo].sort((a, b) => (b.repos + b.vendidas) - (a.repos + a.vendidas))[0];
       const otros = grupo.filter((p) => p.id !== destino.id);
+
+      // Si el producto es único y no tiene sabores repetidos, no hay nada que hacer
+      if (otros.length === 0) {
+        const [[rep]] = await conn.query(
+          `SELECT COUNT(*) - COUNT(DISTINCT LOWER(REGEXP_REPLACE(nombre, '[^a-zA-Z0-9]', ''))) AS sobran
+             FROM gustos WHERE producto_id = ?`, [destino.id]);
+        if (Number(rep.sobran) === 0) continue;
+      }
+
       destinos.push(destino.id);
-      log.push(`\n${destino.nombre.trim()}  (destino: ${destino.id}, absorbe ${otros.map((o) => o.id).join(", ")})`);
+      log.push(otros.length
+        ? `\n${destino.nombre.trim()}  (destino: ${destino.id}, absorbe ${otros.map((o) => o.id).join(", ")})`
+        : `\n${destino.nombre.trim()}  (destino: ${destino.id}, junta sabores repetidos)`);
 
       // Todos los sabores del grupo, empezando por los del destino
       const ids = [destino.id, ...otros.map((o) => o.id)];
@@ -154,6 +207,8 @@ async function totales(conn) {
     }
 
     const despues = await totales(conn);
+    const sucDespues = await stockPorSucursal(conn);
+    const modeloDespues = await stockPorSucursalYModelo(conn);
 
     // Cómo queda Costos Central para los modelos tocados: es el motivo del
     // arreglo, así que conviene verlo antes de confirmar.
@@ -190,6 +245,26 @@ async function totales(conn) {
       if (!igual) ok = false;
       console.log(`  ${igual ? "OK " : "!! "} ${k.padEnd(16)} ${antes[k]} -> ${despues[k]}`);
     }
+    console.log("\n=== STOCK POR SUCURSAL (ninguna puede cambiar)");
+    for (const [id, a] of sucAntes) {
+      const d = sucDespues.get(id);
+      const igual = a.unidades === d.unidades;
+      if (!igual) ok = false;
+      console.log(`  ${igual ? "OK " : "!! "} ${a.nombre.padEnd(26)} ${a.unidades} -> ${d.unidades}`);
+    }
+
+    console.log("\n=== STOCK POR SUCURSAL Y MODELO");
+    let difModelos = 0;
+    const claves = new Set([...modeloAntes.keys(), ...modeloDespues.keys()]);
+    for (const k of claves) {
+      const a = modeloAntes.get(k) || 0;
+      const d = modeloDespues.get(k) || 0;
+      if (a !== d) { ok = false; difModelos++; console.log(`  !! ${k}  ${a} -> ${d}`); }
+    }
+    console.log(difModelos === 0
+      ? `  OK  ${claves.size} combinaciones de sucursal y modelo, todas iguales`
+      : `  !! ${difModelos} combinaciones cambiaron`);
+
     if (!ok) throw new Error("Los totales cambiaron: no se aplica nada");
 
     if (APLICAR) { await conn.commit(); console.log("\nCambios confirmados."); }
