@@ -12,7 +12,7 @@
 
 const pool = require("../db");
 const { marcar, limpiar } = require("../movimientos");
-const { avisarVenta } = require("./telegram");
+const { avisarVenta, chatDeVentas } = require("./telegram");
 
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_VENTAS || "";
 
@@ -27,13 +27,17 @@ const pesos = (n) => "$" + Math.round(Number(n || 0)).toLocaleString("es-AR");
  * @param {number|null} [p.precioUnitario]  Si no viene, el precio de esa sucursal
  * @param {number|null} [p.vendedorId]      Solo para vendedores minoristas
  * @param {number|null} [p.usuarioId]       Quién la carga, para el historial
+ * @param {string|null} [p.origenChat]      Chat de Telegram desde el que se cargó.
+ *   Si es el mismo al que van los avisos, no se manda: avisarte de una venta que
+ *   acabás de cargar vos son dos mensajes para la misma cosa.
  * @returns {Promise<{ok: boolean, error?: string, venta_id?: number, precio_unitario?: number, quedan?: number}>}
  *
  * No tira: los problemas esperables (sin stock, stock insuficiente) vuelven
  * como `{ok: false, error}` para que cada quien los muestre a su manera.
  */
 async function registrarVenta({
-  gustoId, sucursalId, cantidad, precioUnitario = null, vendedorId = null, usuarioId = null,
+  gustoId, sucursalId, cantidad, precioUnitario = null, vendedorId = null,
+  usuarioId = null, origenChat = null,
 }) {
   const gid = Number(gustoId);
   const sid = Number(sucursalId);
@@ -88,7 +92,7 @@ async function registrarVenta({
     conn.release();
   }
 
-  const quedan = await avisar({ ventaId, gid, sid, cant, precioFinal, vendedorId });
+  const quedan = await avisar({ ventaId, gid, sid, cant, precioFinal, vendedorId, origenChat });
   return { ok: true, venta_id: ventaId, precio_unitario: Number(precioFinal), quedan };
 }
 
@@ -97,7 +101,7 @@ async function registrarVenta({
  * puede hacerla fallar: si se cae, se loguea y listo.
  * @returns {Promise<number|null>} lo que queda de ese sabor en esa sucursal
  */
-async function avisar({ ventaId, gid, sid, cant, precioFinal, vendedorId }) {
+async function avisar({ ventaId, gid, sid, cant, precioFinal, vendedorId, origenChat }) {
   try {
     const [rows] = await pool.promise().query(
       `SELECT g.nombre AS gusto_nombre, p.nombre AS modelo_nombre, s.nombre AS sucursal_nombre,
@@ -116,7 +120,10 @@ async function avisar({ ventaId, gid, sid, cant, precioFinal, vendedorId }) {
     const quedan = info.quedan == null ? null : Number(info.quedan);
     const total = Number(precioFinal || 0) * Number(cant || 0);
 
-    avisarVenta(
+    // Si la cargó el mismo chat que recibe los avisos, no le avisamos: ya lo sabe
+    const silenciar = origenChat != null && String(origenChat) === String(chatDeVentas());
+
+    if (!silenciar) avisarVenta(
       [
         `Venta en ${limpio(info.sucursal_nombre) || "sucursal " + sid}`,
         limpio(info.modelo_nombre),

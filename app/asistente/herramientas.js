@@ -599,6 +599,8 @@ async function confirmarVenta({ confirmacion }, ctx = {}) {
     cantidad: p.cantidad,
     precioUnitario: p.precio,
     usuarioId: ctx.usuarioId ?? null,
+    // Para no mandarte el aviso de una venta que cargaste vos mismo por acá
+    origenChat: ctx.chatId ?? null,
   });
 
   if (!r.ok) return { error: r.error, disponible: r.disponible };

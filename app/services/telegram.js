@@ -30,4 +30,8 @@ function avisarVenta(texto) {
   return avisarTelegram(texto, { chatId: CHAT_ID_VENTAS });
 }
 
-module.exports = { avisarTelegram, avisarVenta };
+/** A qué chat van los avisos de venta. Sirve para no avisarle a alguien de algo
+ *  que acaba de hacer él mismo. */
+const chatDeVentas = () => CHAT_ID_VENTAS;
+
+module.exports = { avisarTelegram, avisarVenta, chatDeVentas };
