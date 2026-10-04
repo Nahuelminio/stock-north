@@ -27,6 +27,11 @@ const MEMORIA = 20;
 
 const historial = new Map(); // chatId -> [{role, content}]
 
+// Cuántos mensajes mandaste en cada chat. Es lo que impide que el asistente
+// prepare y confirme una venta de corrido: confirmar exige que el turno haya
+// avanzado, y el turno avanza solamente cuando escribís vos.
+const turnos = new Map(); // chatId -> número
+
 function instrucciones() {
   const hoy = new Date();
   const fecha = hoy.toLocaleDateString("es-AR", {
@@ -58,7 +63,16 @@ Qué tener en cuenta:
 - Si no entendés qué sucursal o qué producto te están nombrando, preguntá en vez de adivinar.
 - Si notás algo raro en los datos —un margen muy bajo, una deuda negativa, un costo imposible— mencionalo aunque no te lo hayan preguntado.
 
-Lo que no podés hacer: solo consultás, no cargás ni modificás nada. Si te piden registrar una venta, aprobar un pago o cambiar un precio, decí que eso se hace desde el sistema.`;
+Registrar ventas es lo único que podés escribir, y va en dos pasos:
+1. preparar_venta resuelve el sabor y el precio. No escribe nada.
+2. Le mostrás el detalle completo —producto, sabor, sucursal, cantidad, precio, total y cuánto queda— y le preguntás si confirma.
+3. Recién cuando te contesta que sí, confirmar_venta.
+
+Nunca encadenes los dos pasos en el mismo turno: el sistema lo rechaza y hacés perder tiempo.
+Si preparar_venta devuelve varios sabores, preguntale cuál es. No elijas vos aunque uno parezca el obvio.
+Si te dice que no, o cambia algo, prepará la venta de nuevo con los datos corregidos.
+
+Todo lo demás es solo lectura. Si te piden aprobar un pago, cambiar un precio, anular algo o cargar una reposición, decí que eso se hace desde el sistema.`;
 }
 
 /**
@@ -69,6 +83,9 @@ Lo que no podés hacer: solo consultás, no cargás ni modificás nada. Si te pi
  */
 async function responder(chatId, texto) {
   const clave = String(chatId);
+  const turno = (turnos.get(clave) || 0) + 1;
+  turnos.set(clave, turno);
+
   const mensajes = historial.get(clave) || [];
   mensajes.push({ role: "user", content: texto });
 
@@ -96,7 +113,7 @@ async function responder(chatId, texto) {
     const resultados = await Promise.all(
       pedidos.map(async (b) => {
         usadas.push(b.name);
-        const dato = await ejecutar(b.name, b.input);
+        const dato = await ejecutar(b.name, b.input, { chatId: clave, turno });
         return {
           type: "tool_result",
           tool_use_id: b.id,
@@ -131,6 +148,7 @@ function guardar(clave, mensajes) {
 /** Olvida la conversación de un chat. */
 function olvidar(chatId) {
   historial.delete(String(chatId));
+  turnos.delete(String(chatId));
 }
 
 module.exports = { responder, olvidar, MODELO };

@@ -2,10 +2,8 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
-const { marcar, limpiar } = require("../movimientos");
-const { avisarVenta } = require("../services/telegram");
+const { registrarVenta } = require("../services/registrarVenta");
 
-const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_VENTAS || "";
 
 
 // Si tu Node no tiene fetch nativo (Node < 18), descomentá esto:
@@ -15,162 +13,51 @@ const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_VENTAS || "";
 router.post("/vender", authenticate, async (req, res) => {
   const { rol, id: userId, sucursalId: sucursalIdDesdeToken } = req.user;
 
-  const gustoId      = Number(req.body.gusto_id);
-  const cantidad     = Number(req.body.cantidad);
+  const gustoId = Number(req.body.gusto_id);
+  const cantidad = Number(req.body.cantidad);
   const sucursalIdBody = Number(req.body.sucursal_id);
-  const precioCustom = req.body.precio_unitario != null && req.body.precio_unitario !== ""
-    ? Number(req.body.precio_unitario) : null;
+  const precioCustom =
+    req.body.precio_unitario != null && req.body.precio_unitario !== ""
+      ? Number(req.body.precio_unitario)
+      : null;
 
   const esVendedor = rol === "vendedor";
 
-  // sucursalIdFinal: sucursal donde ocurre la venta / se descuenta el stock
-  // - admin:    usa lo que manda en body
-  // - vendedor: bloqueado a la sucursal de su usuario, igual que una sucursal.
-  //   Antes tomaba lo que viniera en el body y eso permitia cargar una venta
-  //   contra cualquier sucursal por error.
-  // - sucursal: bloqueado a su propia sucursal del token
-  const sucursalIdFinal = rol === "admin"
-    ? sucursalIdBody
-    : Number(sucursalIdDesdeToken);
+  // Dónde ocurre la venta y de dónde sale el stock.
+  // - admin:    lo que manda en el body
+  // - vendedor: su propia sucursal, igual que una sucursal. Antes tomaba lo que
+  //   viniera en el body y eso permitía cargar contra cualquier sucursal.
+  // - sucursal: su propia sucursal del token
+  const sucursalIdFinal = rol === "admin" ? sucursalIdBody : Number(sucursalIdDesdeToken);
 
-  // Un vendedor sin sucursal asignada no puede vender: la venta quedaria sin
-  // sucursal y el stock no se descontaria de ningun lado.
+  // Un vendedor sin sucursal no puede vender: la venta quedaría sin sucursal y
+  // el stock no se descontaría de ningún lado.
   if (esVendedor && !sucursalIdFinal) {
     return res.status(400).json({
       error: "Tu usuario no tiene una sucursal asignada. Avisale al administrador.",
     });
   }
 
-  // vendedor_id: identifica quién vendió (solo para vendedores)
-  const vendedorId = esVendedor ? userId : null;
+  const r = await registrarVenta({
+    gustoId,
+    sucursalId: sucursalIdFinal,
+    cantidad,
+    precioUnitario: precioCustom,
+    vendedorId: esVendedor ? userId : null,
+    usuarioId: userId,
+  });
 
-  // Validaciones
-  if (!Number.isInteger(gustoId) || gustoId <= 0)
-    return res.status(400).json({ error: "gusto_id inválido" });
-  if (!Number.isInteger(cantidad) || cantidad <= 0)
-    return res.status(400).json({ error: "Cantidad inválida" });
-  if (!Number.isInteger(sucursalIdFinal) || sucursalIdFinal <= 0)
-    return res.status(400).json({ error: "sucursal_id inválido" });
-
-  const conn = await pool.promise().getConnection();
-  try {
-    await conn.beginTransaction();
-
-    // Leer y bloquear stock
-    const [rows] = await conn.query(
-      "SELECT cantidad, precio FROM stock WHERE gusto_id = ? AND sucursal_id = ? FOR UPDATE",
-      [gustoId, sucursalIdFinal]
-    );
-    const stockRow = rows?.[0];
-
-    if (!stockRow) {
-      await conn.rollback();
-      return res.status(404).json({ error: "Stock no encontrado" });
-    }
-    if (stockRow.cantidad < cantidad) {
-      await conn.rollback();
-      return res.status(400).json({ error: "Stock insuficiente" });
-    }
-
-    // Descontar stock
-    await marcar(conn, "venta", { usuarioId: req.user?.id });
-    await conn.query(
-      "UPDATE stock SET cantidad = cantidad - ? WHERE gusto_id = ? AND sucursal_id = ?",
-      [cantidad, gustoId, sucursalIdFinal]
-    );
-    await limpiar(conn);
-
-    const precioFinal = (precioCustom != null && !isNaN(precioCustom) && precioCustom >= 0)
-      ? precioCustom : stockRow.precio;
-
-    const [ins] = await conn.query(
-      `INSERT INTO ventas (gusto_id, sucursal_id, sucursal_stock_id, vendedor_id, cantidad, precio_unitario, fecha)
-       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-      [gustoId, sucursalIdFinal, sucursalIdFinal, vendedorId, cantidad, precioFinal]
-    );
-
-    await conn.commit();
-
-    // Responder al frontend inmediatamente — n8n va aparte
-    res.json({
-      mensaje: "✅ Venta registrada",
-      venta_id: ins.insertId,
-      precio_unitario: precioFinal,
-    });
-
-    // Aviso por Telegram y webhook a n8n — usa pool (conn ya fue liberada en
-    // finally). Una sola consulta para los dos: nombres, quién vendió y lo que
-    // queda en esa sucursal. Fire-and-forget: si algo falla, la venta ya está.
-    pool
-      .promise()
-      .query(
-        `SELECT g.nombre AS gusto_nombre, p.nombre AS modelo_nombre, s.nombre AS sucursal_nombre,
-                COALESCE(NULLIF(TRIM(u.nombre), ''), SUBSTRING_INDEX(u.email, '@', 1)) AS vendedor_nombre,
-                (SELECT st.cantidad FROM stock st
-                  WHERE st.gusto_id = v.gusto_id AND st.sucursal_id = v.sucursal_id) AS quedan
-         FROM ventas v
-         JOIN gustos g    ON v.gusto_id = g.id
-         JOIN productos p ON g.producto_id = p.id
-         JOIN sucursales s ON v.sucursal_id = s.id
-         LEFT JOIN usuarios u ON u.id = v.vendedor_id
-         WHERE v.id = ?`,
-        [ins.insertId]
-      )
-      .then(([rows]) => {
-        const info = rows?.[0] || {};
-        const limpio = (t) => String(t || "").replace(/\s+/g, " ").trim();
-        const pesos = (n) =>
-          "$" + Math.round(Number(n || 0)).toLocaleString("es-AR");
-        const total = Number(precioFinal || 0) * Number(cantidad || 0);
-        const quedan = info.quedan == null ? null : Number(info.quedan);
-
-        avisarVenta(
-          [
-            `Venta en ${limpio(info.sucursal_nombre) || "sucursal " + sucursalIdFinal}`,
-            limpio(info.modelo_nombre),
-            info.gusto_nombre ? `Sabor: ${limpio(info.gusto_nombre)}` : null,
-            `${cantidad} x ${pesos(precioFinal)} = ${pesos(total)}`,
-            info.vendedor_nombre ? `Vendio: ${limpio(info.vendedor_nombre)}` : null,
-            quedan == null
-              ? null
-              : quedan === 0
-              ? "SIN STOCK de ese sabor en esa sucursal"
-              : quedan <= 2
-              ? `Quedan solo ${quedan}`
-              : `Quedan ${quedan}`,
-          ]
-            .filter(Boolean)
-            .join("\n")
-        );
-
-        if (!N8N_WEBHOOK_URL) return;
-        return fetch(N8N_WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            venta_id: ins.insertId,
-            gusto_id: gustoId,
-            sucursal_id: sucursalIdFinal,
-            vendedor_id: vendedorId,
-            cantidad,
-            precio_unitario: precioFinal,
-            fecha_iso: new Date().toISOString(),
-            modelo_nombre: info.modelo_nombre || null,
-            gusto_nombre: info.gusto_nombre || null,
-            sucursal_nombre: info.sucursal_nombre || null,
-          }),
-        });
-      })
-      .catch((err) => {
-        console.error("aviso de venta:", err.message || err);
-      });
-  } catch (e) {
-    await conn.rollback();
-    console.error("❌ Error al registrar venta:", e.code || e.message, e);
-    return res.status(500).json({ error: "Error al registrar venta" });
-  } finally {
-    conn.release();
+  if (!r.ok) {
+    const codigo = r.error === "Stock no encontrado" ? 404
+      : r.error === "Error al registrar la venta" ? 500 : 400;
+    return res.status(codigo).json({ error: r.error });
   }
+
+  res.json({
+    mensaje: "✅ Venta registrada",
+    venta_id: r.venta_id,
+    precio_unitario: r.precio_unitario,
+  });
 });
 
 

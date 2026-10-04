@@ -42,11 +42,20 @@ que diga cuándo sirve y no solo qué devuelve.
 
 Probala suelta antes de pasar por el modelo: están todas exportadas al final.
 
-## Por qué solo lee
+## Registrar ventas
 
-Una respuesta equivocada se aclara con otra pregunta. Una escritura equivocada
-queda en la base. Si alguna vez se agregan acciones, van con confirmación
-explícita y nunca para lo irreversible.
+Es lo único que el asistente escribe, y va en dos pasos: `preparar_venta`
+resuelve el sabor y el precio sin tocar nada, y `confirmar_venta` escribe.
+
+El freno no es que el prompt pida confirmación —eso un modelo lo puede saltear—
+sino que `confirmar_venta` rechaza un pendiente creado en el mismo turno. El
+turno avanza solo cuando mandás un mensaje, así que entre preparar y confirmar
+tenés que haber escrito vos. El pendiente dura diez minutos y se usa una vez.
+
+La venta la hace `services/registrarVenta.js`, el mismo que usa la pantalla:
+una sola implementación para los dos, como con los costos.
+
+Todo lo demás sigue siendo de lectura.
 
 ## Límites conocidos
 

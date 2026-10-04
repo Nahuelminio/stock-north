@@ -12,6 +12,7 @@
 const pool = require("../db");
 const { CENTRAL_ID, costoUnitario, costosDeGustos, margenPct } = require("../costos");
 const { dolarEnFecha, dolarCripto, aUsd } = require("../dolar");
+const { registrarVenta } = require("../services/registrarVenta");
 
 const db = () => pool.promise();
 
@@ -451,6 +452,168 @@ async function cotizacionDolar() {
 // Catálogo que ve el modelo
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Registrar ventas
+//
+// Lo único que el asistente puede escribir, y va en dos pasos obligatorios:
+// preparar (no toca nada, devuelve un pendiente) y confirmar (escribe).
+//
+// El freno de verdad no es que el prompt diga "pedí confirmación": es que
+// confirmar_venta sólo acepta un pendiente creado en un TURNO ANTERIOR. Como
+// el turno avanza cuando vos mandás un mensaje, el modelo no puede preparar y
+// confirmar de corrido: entre las dos cosas tenés que haber escrito algo.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const crypto = require("crypto");
+
+const PENDIENTES = new Map();     // chatId -> pendiente
+const VENCE_MS = 10 * 60 * 1000;  // a los diez minutos hay que volver a prepararla
+
+/** Busca el sabor en una sucursal. Devuelve uno, varios para elegir, o ninguno. */
+async function buscarGusto(sucursalId, producto, sabor) {
+  const where = ["st.sucursal_id = ?", "st.cantidad > 0"];
+  const params = [sucursalId];
+  if (producto) {
+    where.push("p.nombre LIKE ?");
+    params.push(`%${producto}%`);
+  }
+  if (sabor) {
+    where.push("g.nombre LIKE ?");
+    params.push(`%${sabor}%`);
+  }
+  const [filas] = await db().query(
+    `SELECT g.id AS gusto_id, p.nombre AS producto, g.nombre AS sabor,
+            st.cantidad AS stock, st.precio
+       FROM stock st
+       JOIN gustos g ON g.id = st.gusto_id
+       JOIN productos p ON p.id = g.producto_id
+      WHERE ${where.join(" AND ")}
+      ORDER BY st.cantidad DESC
+      LIMIT 25`,
+    params
+  );
+  return filas;
+}
+
+/**
+ * Arma la venta y la deja esperando confirmación. No escribe nada.
+ * Si el sabor es ambiguo devuelve las opciones para que el asistente pregunte.
+ */
+async function prepararVenta({ sucursal, producto, sabor, cantidad, precio_unitario }, ctx = {}) {
+  const cant = Number(cantidad);
+  if (!Number.isInteger(cant) || cant <= 0) {
+    return { error: "La cantidad tiene que ser un número entero mayor a cero." };
+  }
+  if (!sucursal) return { error: "Falta la sucursal. Preguntale en cuál se vendió." };
+
+  const suc = await buscarSucursal(sucursal);
+  if (!suc) return { error: `No encontré ninguna sucursal que se parezca a "${sucursal}".` };
+
+  const candidatos = await buscarGusto(suc.id, producto, sabor);
+
+  if (candidatos.length === 0) {
+    const buscado = limpio(`${producto || ""} ${sabor || ""}`);
+    return {
+      error: `No hay stock de "${buscado}" en ${suc.nombre}.`,
+      sugerencia: "Fijate que el nombre esté bien, o consultá el stock de esa sucursal.",
+    };
+  }
+
+  if (candidatos.length > 1) {
+    return {
+      ambiguo: true,
+      sucursal: suc.nombre,
+      mensaje: "Hay varios sabores que coinciden. Preguntale cuál es, no elijas vos.",
+      opciones: candidatos.slice(0, 12).map((c) => ({
+        producto: limpio(c.producto),
+        sabor: c.sabor,
+        stock: Number(c.stock),
+        precio: Number(c.precio),
+      })),
+    };
+  }
+
+  const c = candidatos[0];
+  if (Number(c.stock) < cant) {
+    return {
+      error: `En ${suc.nombre} quedan ${c.stock} de ${limpio(c.producto)} ${c.sabor}, no alcanzan para ${cant}.`,
+    };
+  }
+
+  const precio = precio_unitario != null && Number(precio_unitario) >= 0
+    ? Number(precio_unitario) : Number(c.precio);
+
+  const pendiente = {
+    token: crypto.randomBytes(8).toString("hex"),
+    turno: ctx.turno ?? 0,
+    creado: Date.now(),
+    gustoId: Number(c.gusto_id),
+    sucursalId: suc.id,
+    cantidad: cant,
+    precio,
+    detalle: {
+      sucursal: suc.nombre,
+      producto: limpio(c.producto),
+      sabor: c.sabor,
+      cantidad: cant,
+      precio_unitario: precio,
+      total: precio * cant,
+      stock_actual: Number(c.stock),
+      quedarian: Number(c.stock) - cant,
+    },
+  };
+  PENDIENTES.set(String(ctx.chatId || "consola"), pendiente);
+
+  return {
+    confirmacion: pendiente.token,
+    ...pendiente.detalle,
+    instruccion:
+      "Mostrale TODO esto y preguntale si confirma. No llames a confirmar_venta " +
+      "hasta que te conteste que sí en un mensaje nuevo.",
+  };
+}
+
+/** Escribe la venta, si hay un pendiente válido y vos ya contestaste que sí. */
+async function confirmarVenta({ confirmacion }, ctx = {}) {
+  const clave = String(ctx.chatId || "consola");
+  const p = PENDIENTES.get(clave);
+
+  if (!p) return { error: "No hay ninguna venta esperando confirmación. Prepará la venta de nuevo." };
+  if (p.token !== confirmacion) return { error: "Ese código de confirmación no es el de la venta pendiente." };
+  if (Date.now() - p.creado > VENCE_MS) {
+    PENDIENTES.delete(clave);
+    return { error: "La confirmación venció. Prepará la venta de nuevo." };
+  }
+  // El freno: tiene que haber pasado un mensaje tuyo entre preparar y confirmar
+  if ((ctx.turno ?? 0) <= p.turno) {
+    return {
+      error: "Todavía no confirmó. Mostrale la venta y esperá a que te diga que sí.",
+    };
+  }
+
+  PENDIENTES.delete(clave); // un pendiente se usa una sola vez
+
+  const r = await registrarVenta({
+    gustoId: p.gustoId,
+    sucursalId: p.sucursalId,
+    cantidad: p.cantidad,
+    precioUnitario: p.precio,
+    usuarioId: ctx.usuarioId ?? null,
+  });
+
+  if (!r.ok) return { error: r.error, disponible: r.disponible };
+
+  return {
+    ok: true,
+    venta_id: r.venta_id,
+    ...p.detalle,
+    quedan: r.quedan,
+  };
+}
+
+/** Para los tests: olvidar lo pendiente. */
+function limpiarPendientes() { PENDIENTES.clear(); }
+
 const HERRAMIENTAS = [
   {
     name: "listar_sucursales",
@@ -559,6 +722,42 @@ const HERRAMIENTAS = [
     ejecutar: margenDePedidos,
   },
   {
+    name: "preparar_venta",
+    description:
+      "PASO 1 para registrar una venta. No escribe nada: resuelve el sabor y el precio y " +
+      "devuelve el detalle con un código de confirmación. Si el sabor es ambiguo devuelve las " +
+      "opciones y hay que preguntarle cuál es, nunca elegir por él. Después de llamarla, " +
+      "mostrale el detalle completo y esperá a que confirme en un mensaje nuevo.",
+    input_schema: {
+      type: "object",
+      properties: {
+        sucursal: { type: "string", description: "Dónde se vendió. Obligatorio." },
+        producto: { type: "string", description: "Modelo: 'ice king', 'bc15000'." },
+        sabor: { type: "string", description: "Sabor, si lo dijo: 'blueberry', 'mango'." },
+        cantidad: { type: "integer", description: "Cuántas unidades." },
+        precio_unitario: { type: "number", description: "Solo si vendió a un precio distinto del de lista." },
+      },
+      required: ["sucursal", "cantidad"],
+      additionalProperties: false,
+    },
+    ejecutar: prepararVenta,
+  },
+  {
+    name: "confirmar_venta",
+    description:
+      "PASO 2: escribe la venta y descuenta el stock. Llamala SOLO después de que te haya " +
+      "dicho que sí en un mensaje posterior al detalle. Si la llamás antes, falla a propósito.",
+    input_schema: {
+      type: "object",
+      properties: {
+        confirmacion: { type: "string", description: "El código que devolvió preparar_venta." },
+      },
+      required: ["confirmacion"],
+      additionalProperties: false,
+    },
+    ejecutar: confirmarVenta,
+  },
+  {
     name: "cotizacion_dolar",
     description: "La cotización del dólar cripto de hoy, que es al que compramos.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
@@ -570,11 +769,11 @@ const HERRAMIENTAS = [
 const catalogo = () => HERRAMIENTAS.map(({ ejecutar, ...resto }) => resto);
 
 /** Corre una herramienta por nombre. Nunca tira: el error vuelve como dato. */
-async function ejecutar(nombre, entrada) {
+async function ejecutar(nombre, entrada, contexto = {}) {
   const h = HERRAMIENTAS.find((x) => x.name === nombre);
   if (!h) return { error: `No existe la herramienta ${nombre}.` };
   try {
-    return await h.ejecutar(entrada || {});
+    return await h.ejecutar(entrada || {}, contexto);
   } catch (e) {
     console.error(`❌ herramienta ${nombre}:`, e);
     return { error: `Falló la consulta: ${e.sqlMessage || e.message}` };
@@ -588,4 +787,5 @@ module.exports = {
   listarSucursales, consultarStock, consultarVentas, masVendido,
   consultarDeudas, costosDeStock, listaDePrecios, margenDePedidos,
   cotizacionDolar, buscarSucursal,
+  prepararVenta, confirmarVenta, limpiarPendientes,
 };
