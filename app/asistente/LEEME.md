@@ -57,6 +57,15 @@ una sola implementación para los dos, como con los costos.
 
 Todo lo demás sigue siendo de lectura.
 
+## El aparato del mostrador
+
+`GET /dispositivo/panel?token=...` devuelve, en 89 bytes, el dólar de hoy, lo
+vendido en el día y la hora. Es lo que muestra la pantalla del ESP32.
+
+Va con un token fijo (`DISPOSITIVO_TOKEN`) porque un microcontrolador no puede
+manejar un JWT que vence. Por eso devuelve solo lo que no molesta que se lea en
+una pantalla apoyada en el mostrador: nada de costos, deudas ni márgenes.
+
 ## Límites conocidos
 
 - **No entiende audios.** Dictar con el teclado del celular llega como texto y
