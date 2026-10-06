@@ -32,6 +32,10 @@ app.use(
 );
 
 // 12mb: las fotos de comprobantes viajan en base64 dentro del JSON
+// El audio de la placa va crudo y tiene que esquivar los parsers de abajo: si
+// express.json o urlencoded lo tocan primero, llega como objeto y no como bytes.
+app.use("/dispositivo/preguntar", express.raw({ type: "*/*", limit: "8mb" }));
+
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: true, limit: "12mb" }));
 

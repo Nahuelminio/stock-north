@@ -7,7 +7,8 @@ la base. Solo consulta: no carga ni modifica nada.
 
 | Archivo | Qué hace |
 |---|---|
-| `herramientas.js` | Las consultas que el asistente puede hacer. Todas de lectura. |
+| `herramientas.js` | Las consultas que el asistente puede hacer, más registrar ventas. |
+| `transcribir.js` | Audio a texto, con Whisper de OpenAI. |
 | `cerebro.js` | Claude con esas herramientas: decide qué consultar y redacta. |
 | `../routes/telegram.routes.js` | La puerta por donde entran los mensajes de Telegram. |
 | `../../conectar_bot.js` | Da de alta el webhook y averigua tu chat_id. |
@@ -22,6 +23,8 @@ la base. Solo consulta: no carga ni modifica nada.
 | `TELEGRAM_WEBHOOK_SECRET` | Secreto de la URL y del header | sí |
 | `TELEGRAM_CHATS_ASISTENTE` | Chats autorizados, separados por coma | si falta usa `TELEGRAM_CHAT_ID` |
 | `ASISTENTE_MODELO` | Para cambiar de modelo | no (`claude-sonnet-5-5`) |
+| `OPENAI_API_KEY` | Transcribir audios (Claude no hace audio) | solo para audio |
+| `DISPOSITIVO_TOKEN` | La placa del mostrador | solo para la placa |
 
 ## Ponerlo a andar
 
@@ -57,10 +60,26 @@ una sola implementación para los dos, como con los costos.
 
 Todo lo demás sigue siendo de lectura.
 
+## Audios
+
+Un audio por Telegram se baja, se transcribe y sigue el mismo camino que un
+mensaje escrito. Antes de contestar, el bot te dice qué entendió: si transcribió
+mal, lo ves vos y no después en la respuesta.
+
+Sin `OPENAI_API_KEY` no rompe: avisa que falta y te pide que escribas.
+
 ## El aparato del mostrador
 
 `GET /dispositivo/panel?token=...` devuelve, en 89 bytes, el dólar de hoy, lo
 vendido en el día y la hora. Es lo que muestra la pantalla del ESP32.
+
+`POST /dispositivo/preguntar` recibe el audio crudo en el cuerpo: la placa graba
+mientras apretás el botón y lo manda tal cual. Transcribe, se lo pasa al mismo
+asistente, manda la respuesta completa a Telegram y le devuelve a la placa un
+renglón corto para la pantalla.
+
+Ese cuerpo esquiva los parsers globales (ver `app.js`): si `express.json` lo toca
+primero, el audio llega como objeto en vez de bytes.
 
 Va con un token fijo (`DISPOSITIVO_TOKEN`) porque un microcontrolador no puede
 manejar un JWT que vence. Por eso devuelve solo lo que no molesta que se lea en
@@ -68,7 +87,5 @@ una pantalla apoyada en el mostrador: nada de costos, deudas ni márgenes.
 
 ## Límites conocidos
 
-- **No entiende audios.** Dictar con el teclado del celular llega como texto y
-  funciona igual. Para audios de verdad hace falta un transcriptor.
 - **La conversación vive en memoria.** Un deploy la borra.
 - **Lee de la base, no del futuro.** Si un dato está mal cargado, lo repite.

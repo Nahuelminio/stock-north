@@ -13,6 +13,13 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 const { dolarHoy } = require("../dolar");
+const { transcribir } = require("../asistente/transcribir");
+const { responder } = require("../asistente/cerebro");
+const { avisarTelegram } = require("../services/telegram");
+
+// El chat al que le llegan las respuestas de lo que se le pregunta a la placa
+const CHAT = (process.env.TELEGRAM_CHATS_ASISTENTE || process.env.TELEGRAM_CHAT_ID || "")
+  .split(",")[0].trim();
 
 const TOKEN = process.env.DISPOSITIVO_TOKEN || "";
 
@@ -52,5 +59,53 @@ router.get("/dispositivo/panel", async (req, res) => {
     res.status(500).json({ error: "error" });
   }
 });
+
+/**
+ * POST /dispositivo/preguntar
+ * El cuerpo es el audio crudo (wav o similar). La placa lo graba mientras
+ * tenés el botón apretado y lo manda tal cual.
+ *
+ * Transcribe, se lo pasa al mismo asistente que el bot, manda la respuesta
+ * completa a Telegram y le devuelve a la placa una versión corta para la
+ * pantalla: ahí no entra un párrafo.
+ */
+router.post(
+  "/dispositivo/preguntar",
+  express.raw({ type: "*/*", limit: "8mb" }),
+  async (req, res) => {
+    if (!autorizado(req)) return res.status(401).json({ error: "no autorizado" });
+
+    const audio = req.body;
+    if (!Buffer.isBuffer(audio) || audio.length === 0) {
+      return res.status(400).json({ error: "sin audio" });
+    }
+
+    try {
+      const t = await transcribir(audio, req.query.formato === "wav" ? "nota.wav" : "nota.ogg");
+      if (!t.ok) {
+        return res.json({ ok: false, pantalla: t.falta_clave ? "sin transcriptor" : "no entendi" });
+      }
+
+      const respuesta = await responder("dispositivo", t.texto);
+
+      // A Telegram va todo, que es donde se lee cómodo
+      if (CHAT) {
+        avisarTelegram(`Desde el aparato: "${t.texto}"\n\n${respuesta}`, { chatId: CHAT });
+      }
+
+      // A la pantalla, el primer renglón y recortado
+      const corto = respuesta.split("\n").find((l) => l.trim()) || "";
+      res.json({
+        ok: true,
+        escuchado: t.texto,
+        pantalla: corto.length > 90 ? corto.slice(0, 87) + "..." : corto,
+        enviado_a_telegram: Boolean(CHAT),
+      });
+    } catch (e) {
+      console.error("❌ POST /dispositivo/preguntar:", e);
+      res.status(500).json({ ok: false, pantalla: "error" });
+    }
+  }
+);
 
 module.exports = router;
