@@ -16,6 +16,7 @@ const express = require("express");
 const router = express.Router();
 const { responder, olvidar } = require("../asistente/cerebro");
 const { transcribir } = require("../asistente/transcribir");
+const { listaDeStock } = require("../asistente/listaStock");
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const SECRETO = process.env.TELEGRAM_WEBHOOK_SECRET || "";
@@ -120,12 +121,38 @@ router.post("/telegram/webhook/:secreto", async (req, res) => {
         "Preguntame lo que quieras del negocio, como se lo preguntarías a alguien.\n\n" +
         "Por ejemplo:\n" +
         "- cuánto ice king me queda\n" +
+        "- pasame la lista de weekend\n" +
         "- cómo venimos hoy\n" +
         "- quién me debe plata\n" +
         "- armame la lista mayorista al 15\n" +
         "- qué margen dejaron los pedidos de septiembre\n\n" +
-        "Solo consulto, no cargo ni modifico nada.\n" +
+        "Para la lista de siempre, la que se manda por WhatsApp:\n" +
+        "/stock central · /stock weekend · /stock todas\n\n" +
         "/olvidar borra lo que veníamos hablando.");
+      return;
+    }
+
+    // /stock va directo, sin pasar por el modelo: el formato es fijo, así sale
+    // al instante y no gasta una llamada. Es el comando que se usaba en n8n.
+    const cmdStock = texto.match(/^\/stock(?:@\w+)?\b\s*(.*)$/i);
+    if (cmdStock) {
+      const pedida = cmdStock[1].trim();
+      if (!pedida) {
+        await enviar(chatId,
+          "¿De qué sucursal? Por ejemplo:\n" +
+          "/stock central\n/stock weekend\n/stock garupa\n/stock todas");
+        return;
+      }
+      const r = await listaDeStock(pedida);
+      if (!r.ok) {
+        await enviar(chatId, `${r.error}\n\nSucursales: ${r.sucursales.join(", ")}`);
+        return;
+      }
+      if (r.vacio) {
+        await enviar(chatId, `${r.sucursal} no tiene nada con stock.`);
+        return;
+      }
+      for (const parte of r.partes) await enviar(chatId, parte);
       return;
     }
 

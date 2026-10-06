@@ -9,6 +9,7 @@ la base. Solo consulta: no carga ni modifica nada.
 |---|---|
 | `herramientas.js` | Las consultas que el asistente puede hacer, más registrar ventas. |
 | `transcribir.js` | Audio a texto, con Whisper de OpenAI. |
+| `listaStock.js` | La lista para mandar por WhatsApp, traída de n8n. |
 | `cerebro.js` | Claude con esas herramientas: decide qué consultar y redacta. |
 | `../routes/telegram.routes.js` | La puerta por donde entran los mensajes de Telegram. |
 | `../../conectar_bot.js` | Da de alta el webhook y averigua tu chat_id. |
@@ -59,6 +60,20 @@ La venta la hace `services/registrarVenta.js`, el mismo que usa la pantalla:
 una sola implementación para los dos, como con los costos.
 
 Todo lo demás sigue siendo de lectura.
+
+## La lista de stock
+
+`/stock central`, `/stock weekend`, `/stock todas`. Es la misma lista que armaba
+el flujo de n8n, con el mismo formato, para poder dar de baja ese servicio.
+
+Va por fuera del modelo: el formato es fijo, así sale al instante y no gasta una
+llamada. Pedirla en castellano también funciona, por la herramienta
+`lista_de_stock`.
+
+Dos cosas que se arreglaron al traerla: las sucursales salen de la base en vez
+de dos mapas escritos a mano que no coincidían y a los que les faltaba Weekend
+Bebidas; y el mensaje va sin `parse_mode`, porque n8n lo mandaba como HTML y un
+`<` o un `&` en el nombre de un producto hacía que Telegram rechazara todo.
 
 ## Audios
 

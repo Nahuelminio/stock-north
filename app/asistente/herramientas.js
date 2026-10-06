@@ -31,18 +31,39 @@ const redondear = (n) => Number((Number(n) || 0).toFixed(2));
  */
 async function buscarSucursal(texto) {
   if (!texto) return null;
-  const [filas] = await db().query(
-    "SELECT id, nombre, apodo FROM sucursales WHERE activo = 1 OR activo IS NULL"
-  );
-  const norma = (s) =>
-    String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
-  const q = norma(texto);
 
-  // Primero exacta, después por contenido en cualquiera de los dos sentidos
+  // Se buscan todas, incluso las inactivas: Brickell y los dos Brooklyn están
+  // en cero pero todavía tienen stock cargado, y si alguien las nombra hay que
+  // contestarle. Entre dos que empatan gana la activa.
+  const [filas] = await db().query(
+    "SELECT id, nombre, apodo, activo FROM sucursales"
+  );
+
+  // Sin acentos y sin signos: así "punto 9" encuentra a "North Punto #9" y
+  // "brooklyn patio" a "Brooklyn - Barra Patio".
+  const norma = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+
+  const q = norma(texto);
+  if (!q) return null;
+  const palabras = q.split(" ").filter(Boolean);
+
+  // Las activas primero, para que un empate lo gane la que está en uso
+  const orden = [...filas].sort((a, b) => Number(b.activo ?? 1) - Number(a.activo ?? 1));
+  const campos = (s) => [norma(s.nombre), norma(s.apodo)].filter(Boolean);
+
   return (
-    filas.find((s) => norma(s.nombre) === q || norma(s.apodo) === q) ||
-    filas.find((s) => norma(s.nombre).includes(q) || norma(s.apodo).includes(q)) ||
-    filas.find((s) => q.includes(norma(s.nombre))) ||
+    // 1. igual
+    orden.find((s) => campos(s).includes(q)) ||
+    // 2. todas las palabras aparecen en el nombre, en cualquier orden
+    orden.find((s) => campos(s).some((c) => palabras.every((w) => c.split(" ").includes(w)))) ||
+    // 3. el nombre está contenido en lo que escribió
+    orden.find((s) => campos(s).some((c) => c && q.includes(c))) ||
     null
   );
 }
@@ -758,6 +779,28 @@ const HERRAMIENTAS = [
       additionalProperties: false,
     },
     ejecutar: confirmarVenta,
+  },
+  {
+    name: "lista_de_stock",
+    description:
+      "Arma la lista de stock con el formato que se le manda a los clientes por WhatsApp: " +
+      "agrupada por modelo, con los sabores disponibles, emojis y separadores. Usala cuando " +
+      "pidan 'la lista' o 'el stock para mandar'. Para una consulta rápida de cuánto hay, " +
+      "usá consultar_stock, que es más corta. El texto que devuelve se manda TAL CUAL, sin " +
+      "reescribirlo ni resumirlo.",
+    input_schema: {
+      type: "object",
+      properties: {
+        sucursal: {
+          type: "string",
+          description: "Nombre de la sucursal, o 'todas' para juntarlas.",
+        },
+      },
+      required: ["sucursal"],
+      additionalProperties: false,
+    },
+    // Require perezoso: listaStock.js usa buscarSucursal de este mismo archivo
+    ejecutar: (args) => require("./listaStock").listaDeStock(args.sucursal),
   },
   {
     name: "cotizacion_dolar",
