@@ -21,9 +21,30 @@ const { listaDeStock } = require("../asistente/listaStock");
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const SECRETO = process.env.TELEGRAM_WEBHOOK_SECRET || "";
 
-// Quiénes pueden usarlo. Si no se define, cae al chat de los avisos.
-const PERMITIDOS = (process.env.TELEGRAM_CHATS_ASISTENTE || process.env.TELEGRAM_CHAT_ID || "")
-  .split(",").map((s) => s.trim()).filter(Boolean);
+// Dos niveles de permiso.
+//
+//   completo: todo. El dueño.
+//   stock:    sólo /stock. Para las sucursales, que necesitan la lista para
+//             mandarle a los clientes y nada más. No pasan por el modelo, así
+//             que no hay forma de que les conteste un costo o una deuda ni
+//             aunque pregunten, y tampoco gastan llamadas.
+//
+// Los avisos de venta no se tocan: van al chat de siempre, así que sumar
+// sucursales acá no les manda ninguna notificación.
+const lista = (v) => (v || "").split(",").map((s) => s.trim()).filter(Boolean);
+
+const CHATS_COMPLETOS = lista(process.env.TELEGRAM_CHATS_ASISTENTE || process.env.TELEGRAM_CHAT_ID);
+const CHATS_STOCK = lista(process.env.TELEGRAM_CHATS_STOCK);
+
+function permiso(chatId) {
+  const id = String(chatId);
+  if (CHATS_COMPLETOS.includes(id)) return "completo";
+  if (CHATS_STOCK.includes(id)) return "stock";
+  return null;
+}
+
+// A quién ya le dijimos que no está habilitado, para no repetirlo en cada mensaje
+const avisados = new Set();
 
 /** Baja un archivo que mandó el usuario. Telegram los da en dos pasos. */
 async function bajarArchivo(fileId) {
@@ -66,6 +87,25 @@ async function enviar(chatId, texto) {
   }
 }
 
+const RE_STOCK = /^\/stock(?:@\w+)?\b\s*(.*)$/i;
+
+const AYUDA_STOCK =
+  "Pedime la lista de stock y te la mando lista para reenviar por WhatsApp.\n\n" +
+  "/stock central\n/stock weekend\n/stock garupa\n/stock todas";
+
+/** Manda la lista, o explica qué falta. La usan los dos niveles de permiso. */
+async function mandarStock(chatId, pedida) {
+  if (!pedida) { await enviar(chatId, AYUDA_STOCK); return; }
+
+  const r = await listaDeStock(pedida);
+  if (!r.ok) {
+    await enviar(chatId, `${r.error}\n\nSucursales: ${r.sucursales.join(", ")}`);
+    return;
+  }
+  if (r.vacio) { await enviar(chatId, `${r.sucursal} no tiene nada con stock.`); return; }
+  for (const parte of r.partes) await enviar(chatId, parte);
+}
+
 router.post("/telegram/webhook/:secreto", async (req, res) => {
   // Contestamos ya: Telegram espera pocos segundos y pensar lleva más
   res.sendStatus(200);
@@ -79,8 +119,36 @@ router.post("/telegram/webhook/:secreto", async (req, res) => {
     if (!msg) return;
 
     const chatId = String(msg.chat?.id || "");
-    if (!PERMITIDOS.includes(chatId)) {
-      console.warn(`🚫 asistente: chat no autorizado ${chatId}`);
+    const nivel = permiso(chatId);
+
+    if (!nivel) {
+      const quien = msg.chat?.title || [msg.from?.first_name, msg.from?.username]
+        .filter(Boolean).join(" @") || "desconocido";
+      console.warn(`🚫 asistente: chat no habilitado ${chatId} (${quien})`);
+      // Una sola vez por chat: así quien escriba puede pasar su número en vez
+      // de quedarse esperando una respuesta que no llega.
+      if (!avisados.has(chatId)) {
+        avisados.add(chatId);
+        await enviar(chatId,
+          "Este bot es privado.\n\n" +
+          `Si tenés que usarlo, pasale este número a Nahuel: ${chatId}`);
+      }
+      return;
+    }
+
+    // Las sucursales no pasan de acá: sólo la lista. No llegan al modelo, así
+    // que no hay manera de que les conteste un costo, una deuda ni un margen,
+    // ni aunque lo pregunten de mil formas.
+    if (nivel === "stock") {
+      const t = (msg.text || "").trim();
+      const cmd = t.match(RE_STOCK);
+      if (cmd) { await mandarStock(chatId, cmd[1].trim()); return; }
+      // "stock central" sin la barra también vale: es como lo escribe la gente
+      if (/\bstock\b/i.test(t)) {
+        await mandarStock(chatId, t.replace(/\bstock\b/i, "").trim());
+        return;
+      }
+      await enviar(chatId, AYUDA_STOCK);
       return;
     }
 
@@ -134,27 +202,8 @@ router.post("/telegram/webhook/:secreto", async (req, res) => {
 
     // /stock va directo, sin pasar por el modelo: el formato es fijo, así sale
     // al instante y no gasta una llamada. Es el comando que se usaba en n8n.
-    const cmdStock = texto.match(/^\/stock(?:@\w+)?\b\s*(.*)$/i);
-    if (cmdStock) {
-      const pedida = cmdStock[1].trim();
-      if (!pedida) {
-        await enviar(chatId,
-          "¿De qué sucursal? Por ejemplo:\n" +
-          "/stock central\n/stock weekend\n/stock garupa\n/stock todas");
-        return;
-      }
-      const r = await listaDeStock(pedida);
-      if (!r.ok) {
-        await enviar(chatId, `${r.error}\n\nSucursales: ${r.sucursales.join(", ")}`);
-        return;
-      }
-      if (r.vacio) {
-        await enviar(chatId, `${r.sucursal} no tiene nada con stock.`);
-        return;
-      }
-      for (const parte of r.partes) await enviar(chatId, parte);
-      return;
-    }
+    const cmdStock = texto.match(RE_STOCK);
+    if (cmdStock) { await mandarStock(chatId, cmdStock[1].trim()); return; }
 
     if (texto === "/olvidar") {
       olvidar(chatId);

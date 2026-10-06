@@ -22,7 +22,8 @@ la base. Solo consulta: no carga ni modifica nada.
 | `ANTHROPIC_API_KEY` | La misma del lector de comprobantes | sí |
 | `TELEGRAM_BOT_TOKEN` | El bot, ya estaba | sí |
 | `TELEGRAM_WEBHOOK_SECRET` | Secreto de la URL y del header | sí |
-| `TELEGRAM_CHATS_ASISTENTE` | Chats autorizados, separados por coma | si falta usa `TELEGRAM_CHAT_ID` |
+| `TELEGRAM_CHATS_ASISTENTE` | Chats con acceso completo, separados por coma | si falta usa `TELEGRAM_CHAT_ID` |
+| `TELEGRAM_CHATS_STOCK` | Chats que sólo pueden pedir la lista | no |
 | `ASISTENTE_MODELO` | Para cambiar de modelo | no (`claude-sonnet-5-5`) |
 | `OPENAI_API_KEY` | Transcribir audios (Claude no hace audio) | solo para audio |
 | `DISPOSITIVO_TOKEN` | La placa del mostrador | solo para la placa |
@@ -60,6 +61,23 @@ La venta la hace `services/registrarVenta.js`, el mismo que usa la pantalla:
 una sola implementación para los dos, como con los costos.
 
 Todo lo demás sigue siendo de lectura.
+
+## Quién puede qué
+
+Dos niveles:
+
+- **completo** (`TELEGRAM_CHATS_ASISTENTE`): todo. El dueño.
+- **stock** (`TELEGRAM_CHATS_STOCK`): sólo la lista. Las sucursales.
+
+El nivel *stock* corta antes de llegar al modelo. No es que el prompt les diga
+que no contesten costos: es que su mensaje nunca llega ahí. Preguntar por
+deudas, márgenes o cargar una venta devuelve siempre la ayuda de la lista.
+
+Tampoco les llega ningún aviso de venta: ésos van al chat de
+`TELEGRAM_CHAT_ID_VENTAS`, que es otra cosa.
+
+Un chat no habilitado recibe una sola vez un mensaje con su propio número, para
+que lo pueda pasar y lo agreguen. Después, silencio.
 
 ## La lista de stock
 
