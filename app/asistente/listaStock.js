@@ -124,8 +124,11 @@ async function listaDeStock(nombreSucursal) {
     bloques.push(`${cabeza}\n\n${lineas.join("\n")}`);
   }
 
+  // La marca va sola en su renglón. Junta con "STOCK DISPONIBLE" daba 40
+  // caracteres y en el celular se partía justo en el medio del nombre.
   const encabezado =
-    `🔥 ${negrita("STOCK DISPONIBLE — THE NORTH SHOP")} 🔥\n` +
+    `🔥 ${negrita("THE NORTH SHOP")} 🔥\n` +
+    `STOCK DISPONIBLE\n` +
     `📍 ${negrita(esTodas ? titulo : `Sucursal ${titulo}`)}`;
 
   const pie =
