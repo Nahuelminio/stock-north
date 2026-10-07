@@ -89,6 +89,27 @@ async function enviar(chatId, texto) {
 
 const RE_STOCK = /^\/stock(?:@\w+)?\b\s*(.*)$/i;
 
+// El link de seguimiento del viaje de Uber
+const RE_UBER = /https?:\/\/(?:www\.)?trip\.uber\.com\/\S+/i;
+
+/**
+ * El mensaje de envío, para reenviarle al cliente.
+ *
+ * Es el mismo texto que armaba el flujo "Delivery" de n8n, palabra por
+ * palabra: es lo que los clientes vienen recibiendo. Va sin parse_mode, así
+ * los asteriscos llegan literales y al pegarlo en WhatsApp quedan en negrita.
+ */
+const mensajeEnvio = (link) =>
+  [
+    "Tu pedido de *The North Shop* ya está en camino.",
+    "",
+    "Podés seguir el trayecto en tiempo real desde este enlace:",
+    link,
+    "",
+    "Te pedimos estar pendiente para recibirlo.",
+    "*¡Gracias por confiar en nosotros!*",
+  ].join("\n");
+
 /**
  * La ayuda nombra todas las sucursales, sacadas de la base. Antes nombraba
  * cuatro escritas a mano y el resto había que adivinarlas.
@@ -111,6 +132,9 @@ async function ayudaStock() {
     ...(vacias.length ? ["", "Sin stock hoy:", ...vacias.map(renglon)] : []),
     "",
     "/stock todas   junta todas en una sola lista",
+    "",
+    "Y si pegás un link de viaje de Uber, te armo el mensaje de envío",
+    "para reenviarle al cliente.",
   ].join("\n");
 }
 
@@ -162,6 +186,8 @@ router.post("/telegram/webhook/:secreto", async (req, res) => {
     // ni aunque lo pregunten de mil formas.
     if (nivel === "stock") {
       const t = (msg.text || "").trim();
+      const uber = t.match(RE_UBER);
+      if (uber) { await enviar(chatId, mensajeEnvio(uber[0])); return; }
       const cmd = t.match(RE_STOCK);
       if (cmd) { await mandarStock(chatId, cmd[1].trim()); return; }
       // "stock central" sin la barra también vale: es como lo escribe la gente
@@ -220,6 +246,10 @@ router.post("/telegram/webhook/:secreto", async (req, res) => {
         "/olvidar borra lo que veníamos hablando.");
       return;
     }
+
+    // Si pegás un link de viaje, te devuelve el mensaje armado para el cliente
+    const uber = texto.match(RE_UBER);
+    if (uber) { await enviar(chatId, mensajeEnvio(uber[0])); return; }
 
     // /stock va directo, sin pasar por el modelo: el formato es fijo, así sale
     // al instante y no gasta una llamada. Es el comando que se usaba en n8n.

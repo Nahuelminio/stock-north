@@ -69,7 +69,8 @@ Dos niveles:
 - **completo** (`TELEGRAM_CHATS_ASISTENTE`): todo. El dueño.
 - **stock** (`TELEGRAM_CHATS_STOCK`): sólo la lista. Las sucursales.
 
-El nivel *stock* corta antes de llegar al modelo. No es que el prompt les diga
+El nivel *stock* llega a dos cosas: la lista y el mensaje de envío. Corta antes
+del modelo. No es que el prompt les diga
 que no contesten costos: es que su mensaje nunca llega ahí. Preguntar por
 deudas, márgenes o cargar una venta devuelve siempre la ayuda de la lista.
 
@@ -92,6 +93,14 @@ Dos cosas que se arreglaron al traerla: las sucursales salen de la base en vez
 de dos mapas escritos a mano que no coincidían y a los que les faltaba Weekend
 Bebidas; y el mensaje va sin `parse_mode`, porque n8n lo mandaba como HTML y un
 `<` o un `&` en el nombre de un producto hacía que Telegram rechazara todo.
+
+## El mensaje de envío
+
+Pegando un link de `trip.uber.com` devuelve el mensaje armado para reenviarle
+al cliente. Es el texto del flujo "Delivery" de n8n, palabra por palabra.
+
+Lo pueden usar también los chats de nivel *stock*: las sucursales son las que
+despachan, así que son las que lo necesitan.
 
 ## Audios
 
