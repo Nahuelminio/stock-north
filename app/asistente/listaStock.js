@@ -159,4 +159,21 @@ async function listaDeStock(nombreSucursal) {
   };
 }
 
-module.exports = { listaDeStock };
+/**
+ * Las sucursales que se pueden pedir, con lo que tienen hoy. Sale de la base
+ * para que al crear una nueva aparezca sola, sin tocar el bot.
+ * Se muestran las que tienen stock primero: pedir una vacía no sirve de nada.
+ */
+async function sucursalesDisponibles() {
+  const [filas] = await pool.promise().query(
+    `SELECT s.nombre,
+            COALESCE((SELECT SUM(st.cantidad) FROM stock st
+                       WHERE st.sucursal_id = s.id), 0) AS unidades
+       FROM sucursales s
+      WHERE s.activo = 1 OR s.activo IS NULL
+      ORDER BY unidades DESC, s.nombre`
+  );
+  return filas.map((f) => ({ nombre: f.nombre, unidades: Number(f.unidades) }));
+}
+
+module.exports = { listaDeStock, sucursalesDisponibles };

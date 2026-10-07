@@ -16,7 +16,7 @@ const express = require("express");
 const router = express.Router();
 const { responder, olvidar } = require("../asistente/cerebro");
 const { transcribir } = require("../asistente/transcribir");
-const { listaDeStock } = require("../asistente/listaStock");
+const { listaDeStock, sucursalesDisponibles } = require("../asistente/listaStock");
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const SECRETO = process.env.TELEGRAM_WEBHOOK_SECRET || "";
@@ -89,17 +89,38 @@ async function enviar(chatId, texto) {
 
 const RE_STOCK = /^\/stock(?:@\w+)?\b\s*(.*)$/i;
 
-const AYUDA_STOCK =
-  "Pedime la lista de stock y te la mando lista para reenviar por WhatsApp.\n\n" +
-  "/stock central\n/stock weekend\n/stock garupa\n/stock todas";
+/**
+ * La ayuda nombra todas las sucursales, sacadas de la base. Antes nombraba
+ * cuatro escritas a mano y el resto había que adivinarlas.
+ * Se arma cada vez: son dos consultas por mes, no hace falta guardarla.
+ */
+async function ayudaStock() {
+  let sucursales = [];
+  try { sucursales = await sucursalesDisponibles(); }
+  catch (e) { console.error("ayudaStock:", e.message); }
+
+  const conStock = sucursales.filter((s) => s.unidades > 0);
+  const vacias = sucursales.filter((s) => s.unidades === 0);
+
+  const renglon = (s) => `/stock ${s.nombre.toLowerCase()}`;
+
+  return [
+    "Pedime la lista de stock y te la mando lista para reenviar por WhatsApp.",
+    "",
+    ...conStock.map((s) => `${renglon(s)}   (${s.unidades})`),
+    ...(vacias.length ? ["", "Sin stock hoy:", ...vacias.map(renglon)] : []),
+    "",
+    "/stock todas   junta todas en una sola lista",
+  ].join("\n");
+}
 
 /** Manda la lista, o explica qué falta. La usan los dos niveles de permiso. */
 async function mandarStock(chatId, pedida) {
-  if (!pedida) { await enviar(chatId, AYUDA_STOCK); return; }
+  if (!pedida) { await enviar(chatId, await ayudaStock()); return; }
 
   const r = await listaDeStock(pedida);
   if (!r.ok) {
-    await enviar(chatId, `${r.error}\n\nSucursales: ${r.sucursales.join(", ")}`);
+    await enviar(chatId, `${r.error}\n\n${await ayudaStock()}`);
     return;
   }
   if (r.vacio) { await enviar(chatId, `${r.sucursal} no tiene nada con stock.`); return; }
@@ -148,7 +169,7 @@ router.post("/telegram/webhook/:secreto", async (req, res) => {
         await mandarStock(chatId, t.replace(/\bstock\b/i, "").trim());
         return;
       }
-      await enviar(chatId, AYUDA_STOCK);
+      await enviar(chatId, await ayudaStock());
       return;
     }
 
