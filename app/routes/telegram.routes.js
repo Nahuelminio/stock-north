@@ -107,7 +107,7 @@ async function ayudaStock() {
   return [
     "Pedime la lista de stock y te la mando lista para reenviar por WhatsApp.",
     "",
-    ...conStock.map((s) => `${renglon(s)}   (${s.unidades})`),
+    ...conStock.map(renglon),
     ...(vacias.length ? ["", "Sin stock hoy:", ...vacias.map(renglon)] : []),
     "",
     "/stock todas   junta todas en una sola lista",
