@@ -14,6 +14,7 @@ const router = express.Router();
 const pool = require("../db");
 const { dolarHoy } = require("../dolar");
 const { transcribir } = require("../asistente/transcribir");
+const { listaDeStock } = require("../asistente/listaStock");
 const { responder } = require("../asistente/cerebro");
 const { avisarTelegram } = require("../services/telegram");
 
@@ -57,6 +58,38 @@ router.get("/dispositivo/panel", async (req, res) => {
   } catch (e) {
     console.error("❌ GET /dispositivo/panel:", e);
     res.status(500).json({ error: "error" });
+  }
+});
+
+/**
+ * POST /dispositivo/lista?sucursal=central
+ * Manda la lista de stock al Telegram del dueño.
+ *
+ * El aparato no tiene cómo mostrar una lista de ochenta sabores, así que la
+ * manda al celular y en la pantalla deja un cartel de una línea. Es la misma
+ * lista que arma el bot, para que no haya dos formatos dando vueltas.
+ */
+router.post("/dispositivo/lista", async (req, res) => {
+  if (!autorizado(req)) return res.status(401).json({ error: "no autorizado" });
+  if (!CHAT) return res.json({ ok: false, pantalla: "sin telegram" });
+
+  const cual = (req.query.sucursal || "central").toString();
+
+  try {
+    const r = await listaDeStock(cual);
+    if (!r.ok) return res.json({ ok: false, pantalla: "no la encontre" });
+    if (r.vacio) return res.json({ ok: false, pantalla: "sin stock" });
+
+    for (const parte of r.partes) avisarTelegram(parte, { chatId: CHAT });
+
+    res.json({
+      ok: true,
+      sucursal: r.sucursal,
+      pantalla: `lista de ${r.sucursal.toLowerCase()} enviada`,
+    });
+  } catch (e) {
+    console.error("❌ POST /dispositivo/lista:", e);
+    res.status(500).json({ ok: false, pantalla: "error" });
   }
 });
 
