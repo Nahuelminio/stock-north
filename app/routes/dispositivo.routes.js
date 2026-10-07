@@ -15,6 +15,7 @@ const pool = require("../db");
 const { dolarHoy } = require("../dolar");
 const { transcribir } = require("../asistente/transcribir");
 const { listaDeStock } = require("../asistente/listaStock");
+const { hablar } = require("../asistente/voz");
 const { responder } = require("../asistente/cerebro");
 const { avisarTelegram } = require("../services/telegram");
 
@@ -128,10 +129,34 @@ router.post(
 
       // A la pantalla, el primer renglón y recortado
       const corto = respuesta.split("\n").find((l) => l.trim()) || "";
+      const pantalla = corto.length > 90 ? corto.slice(0, 87) + "..." : corto;
+
+      // Con ?voz=1 vuelve el audio de la respuesta en vez del JSON, y el texto
+      // viaja en las cabeceras. Así la placa pide una sola vez en vez de
+      // contestar y después ir a buscar el audio.
+      if (req.query.voz === "1") {
+        const v = await hablar(corto);
+        if (v.ok) {
+          res.set({
+            "Content-Type": "audio/L16; rate=16000",
+            "X-Pantalla": encodeURIComponent(pantalla),
+            "X-Escuchado": encodeURIComponent(t.texto),
+          });
+          return res.send(v.pcm);
+        }
+        // Sin voz, al menos que quede el texto
+        console.warn("voz:", v.error);
+        res.set({
+          "X-Pantalla": encodeURIComponent(pantalla),
+          "X-Escuchado": encodeURIComponent(t.texto),
+        });
+        return res.status(204).end();
+      }
+
       res.json({
         ok: true,
         escuchado: t.texto,
-        pantalla: corto.length > 90 ? corto.slice(0, 87) + "..." : corto,
+        pantalla,
         enviado_a_telegram: Boolean(CHAT),
       });
     } catch (e) {

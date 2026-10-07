@@ -803,6 +803,35 @@ const HERRAMIENTAS = [
     ejecutar: (args) => require("./listaStock").listaDeStock(args.sucursal),
   },
   {
+    name: "mandar_lista_a_telegram",
+    description:
+      "Manda la lista de stock de una sucursal al Telegram del dueño. Usala cuando pida " +
+      "que se la mandes, se la pases o se la envíes, en vez de leérsela: una lista de " +
+      "ochenta sabores no se dice en voz alta ni entra en una pantalla chica. " +
+      "Después confirmá en una frase corta, sin repetir la lista.",
+    input_schema: {
+      type: "object",
+      properties: {
+        sucursal: { type: "string", description: "Cuál mandar. Si no la dijo, Central." },
+      },
+      additionalProperties: false,
+    },
+    ejecutar: async (args) => {
+      const { listaDeStock } = require("./listaStock");
+      const { avisarTelegram } = require("../services/telegram");
+      const chat = (process.env.TELEGRAM_CHATS_ASISTENTE || process.env.TELEGRAM_CHAT_ID || "")
+        .split(",")[0].trim();
+      if (!chat) return { error: "No hay un chat de Telegram configurado." };
+
+      const r = await listaDeStock(args.sucursal || "central");
+      if (!r.ok) return { error: r.error };
+      if (r.vacio) return { error: `${r.sucursal} no tiene nada con stock.` };
+
+      for (const parte of r.partes) avisarTelegram(parte, { chatId: chat });
+      return { ok: true, sucursal: r.sucursal, modelos: r.modelos, unidades: r.unidades };
+    },
+  },
+  {
     name: "cotizacion_dolar",
     description: "La cotización del dólar cripto de hoy, que es al que compramos.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
