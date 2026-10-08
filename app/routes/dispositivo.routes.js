@@ -143,9 +143,20 @@ router.post(
       // viaja en las cabeceras. Así la placa pide una sola vez en vez de
       // contestar y después ir a buscar el audio.
       if (req.query.voz === "1") {
+        // Mandando audio sin saber de antemano cuánto dura, HTTP lo parte en
+        // bloques y mete el tamaño de cada uno DENTRO del flujo. La placa lee
+        // el flujo crudo, así que reproduciría esos números como si fueran
+        // sonido: suena a ruido y no mejora bajando el volumen.
+        //
+        // Apagando eso, el cuerpo va limpio de punta a punta y el final lo
+        // marca el cierre de la conexión, que es justo lo que la placa espera.
+        res.useChunkedEncodingByDefault = false;
+        res.shouldKeepAlive = false;
+
         // Las cabeceras salen primero, antes del audio: así la placa ya puede
         // mostrar la respuesta en pantalla mientras la voz todavía se genera.
         res.set({
+          Connection: "close",
           "Content-Type": "audio/L16; rate=16000",
           "X-Pantalla": encodeURIComponent(pantalla),
           "X-Escuchado": encodeURIComponent(t.texto),
