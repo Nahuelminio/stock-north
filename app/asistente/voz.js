@@ -151,32 +151,42 @@ async function hablarEnVivo(texto, alLlegar) {
       return { ok: false, error: `El servicio de voz contestó ${r.status}` };
     }
 
-    let sobra = Buffer.alloc(0);     // bytes que quedaron sin par
-    let ultima = 0;                  // para empalmar con el pedazo siguiente
+    // Los pedazos no caen en límites prolijos, así que hay dos cosas que
+    // arrastrar entre uno y el siguiente: el byte suelto cuando el pedazo
+    // tiene un largo impar, y la posición exacta dentro de la señal, que casi
+    // nunca cae justo en una muestra. Sin lo segundo, cada empalme suena a
+    // chasquido; sin lo primero, el audio entero se vuelve ruido.
+    let sobra = Buffer.alloc(0);
+    let anterior = 0;        // última muestra del pedazo previo
+    let posicion = 0;        // dónde quedó la lectura, con decimales
 
     for await (const parte of r.body) {
-      let bloque = Buffer.concat([sobra, Buffer.from(parte)]);
-      const pares = Math.floor(bloque.length / 2);
-      sobra = bloque.subarray(pares * 2);
-      if (!pares) continue;
+      const bloque = Buffer.concat([sobra, Buffer.from(parte)]);
+      const cuantas = bloque.length >> 1;
+      sobra = bloque.subarray(cuantas << 1);
+      if (!cuantas) continue;
 
-      const entrada = new Int16Array(pares);
-      for (let i = 0; i < pares; i++) entrada[i] = bloque.readInt16LE(i * 2);
+      // Se arma la señal con la última muestra del pedazo anterior adelante,
+      // para poder interpolar en el empalme.
+      const muestras = new Int16Array(cuantas + 1);
+      muestras[0] = anterior;
+      for (let i = 0; i < cuantas; i++) muestras[i + 1] = bloque.readInt16LE(i << 1);
+      anterior = muestras[cuantas];
 
-      const cuantas = Math.floor((entrada.length * SALIDA) / ENTRADA);
-      const salida = new Int16Array(cuantas);
-      for (let i = 0; i < cuantas; i++) {
-        const pos = (i * ENTRADA) / SALIDA;
-        const a = Math.floor(pos);
-        const f = pos - a;
-        const v0 = a === 0 ? ultima : entrada[a - 1 + 1 - 1];
-        const anterior = a < entrada.length ? entrada[a] : entrada[entrada.length - 1];
-        const siguiente = a + 1 < entrada.length ? entrada[a + 1] : anterior;
-        salida[i] = (a === 0 && f === 0 ? v0 : anterior) * (1 - f) + siguiente * f;
+      const paso = ENTRADA / SALIDA;           // 1,5 muestras de entrada por una de salida
+      const salida = [];
+      while (posicion + 1 < muestras.length) {
+        const a = Math.floor(posicion);
+        const f = posicion - a;
+        salida.push(Math.round(muestras[a] * (1 - f) + muestras[a + 1] * f));
+        posicion += paso;
       }
-      ultima = entrada[entrada.length - 1];
+      posicion -= cuantas;                     // se arrastra al pedazo siguiente
 
-      alLlegar(Buffer.from(salida.buffer, salida.byteOffset, salida.byteLength));
+      if (salida.length) {
+        const pcm = new Int16Array(salida);
+        alLlegar(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength));
+      }
     }
     return { ok: true };
   } catch (e) {
