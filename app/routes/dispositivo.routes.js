@@ -95,6 +95,46 @@ router.post("/dispositivo/lista", async (req, res) => {
 });
 
 /**
+ * GET /dispositivo/decir?texto=...&wav=1
+ * Convierte un texto en voz y lo devuelve.
+ *
+ * Sirve para probar el audio sin pasar por el micrófono ni por el asistente:
+ * si lo que sale de acá suena bien, el problema está después.
+ * Con wav=1 agrega el encabezado para poder escucharlo en una computadora.
+ */
+router.get("/dispositivo/decir", async (req, res) => {
+  if (!autorizado(req)) return res.status(401).json({ error: "no autorizado" });
+
+  const texto = (req.query.texto || "").toString().trim();
+  if (!texto) return res.status(400).json({ error: "falta el texto" });
+
+  const v = await hablar(texto);
+  if (!v.ok) return res.status(502).json({ error: v.error });
+
+  if (req.query.wav === "1") {
+    const datos = v.pcm.length;
+    const cab = Buffer.alloc(44);
+    cab.write("RIFF", 0);
+    cab.writeUInt32LE(datos + 36, 4);
+    cab.write("WAVEfmt ", 8);
+    cab.writeUInt32LE(16, 16);
+    cab.writeUInt16LE(1, 20);
+    cab.writeUInt16LE(1, 22);
+    cab.writeUInt32LE(16000, 24);
+    cab.writeUInt32LE(32000, 28);
+    cab.writeUInt16LE(2, 32);
+    cab.writeUInt16LE(16, 34);
+    cab.write("data", 36);
+    cab.writeUInt32LE(datos, 40);
+    res.set("Content-Type", "audio/wav");
+    return res.send(Buffer.concat([cab, v.pcm]));
+  }
+
+  res.set("Content-Type", "audio/L16; rate=16000");
+  res.send(v.pcm);
+});
+
+/**
  * POST /dispositivo/preguntar
  * El cuerpo es el audio crudo (wav o similar). La placa lo graba mientras
  * tenés el botón apretado y lo manda tal cual.
