@@ -91,4 +91,90 @@ async function hablar(texto) {
   }
 }
 
-module.exports = { hablar, SALIDA };
+/**
+ * Lo mismo pero sin esperar: va mandando el audio a medida que se genera.
+ *
+ * Esperar a tener la frase entera antes de empezar a sonar agrega casi dos
+ * segundos de silencio. Lo que se nota en una conversación no es el total sino
+ * cuánto tardás en escuchar la primera palabra, y así arranca apenas llega el
+ * primer pedazo.
+ *
+ * El remuestreo se hace al vuelo. Como los pedazos no caen en límites prolijos,
+ * se guarda la última muestra de cada uno para empalmar con el siguiente: sin
+ * eso queda un chasquido en cada empalme.
+ *
+ * @param {string} texto
+ * @param {(trozo: Buffer) => void} alLlegar  Se llama con cada pedazo ya a 16 kHz
+ * @returns {Promise<{ok: boolean, error?: string, falta_clave?: boolean}>}
+ */
+async function hablarEnVivo(texto, alLlegar) {
+  if (!process.env.OPENAI_API_KEY) {
+    return { ok: false, falta_clave: true, error: "Falta OPENAI_API_KEY" };
+  }
+  const limpio = String(texto || "").trim();
+  if (!limpio) return { ok: false, error: "No hay nada que decir" };
+
+  const ctrl = new AbortController();
+  const corte = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+
+  try {
+    const r = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: MODELO,
+        voice: VOZ,
+        input: limpio.slice(0, 500),
+        response_format: "pcm",
+        instructions: "Hablá en español rioplatense, con naturalidad y sin " +
+                      "exagerar la entonación. Tono tranquilo y breve.",
+      }),
+      signal: ctrl.signal,
+    });
+
+    if (!r.ok) {
+      const detalle = await r.text().catch(() => "");
+      console.error("❌ voz:", r.status, detalle.slice(0, 200));
+      return { ok: false, error: `El servicio de voz contestó ${r.status}` };
+    }
+
+    let sobra = Buffer.alloc(0);     // bytes que quedaron sin par
+    let ultima = 0;                  // para empalmar con el pedazo siguiente
+
+    for await (const parte of r.body) {
+      let bloque = Buffer.concat([sobra, Buffer.from(parte)]);
+      const pares = Math.floor(bloque.length / 2);
+      sobra = bloque.subarray(pares * 2);
+      if (!pares) continue;
+
+      const entrada = new Int16Array(pares);
+      for (let i = 0; i < pares; i++) entrada[i] = bloque.readInt16LE(i * 2);
+
+      const cuantas = Math.floor((entrada.length * SALIDA) / ENTRADA);
+      const salida = new Int16Array(cuantas);
+      for (let i = 0; i < cuantas; i++) {
+        const pos = (i * ENTRADA) / SALIDA;
+        const a = Math.floor(pos);
+        const f = pos - a;
+        const v0 = a === 0 ? ultima : entrada[a - 1 + 1 - 1];
+        const anterior = a < entrada.length ? entrada[a] : entrada[entrada.length - 1];
+        const siguiente = a + 1 < entrada.length ? entrada[a + 1] : anterior;
+        salida[i] = (a === 0 && f === 0 ? v0 : anterior) * (1 - f) + siguiente * f;
+      }
+      ultima = entrada[entrada.length - 1];
+
+      alLlegar(Buffer.from(salida.buffer, salida.byteOffset, salida.byteLength));
+    }
+    return { ok: true };
+  } catch (e) {
+    console.error("❌ voz en vivo:", e.message);
+    return { ok: false, error: e.name === "AbortError" ? "Tardó demasiado" : "No se pudo generar la voz" };
+  } finally {
+    clearTimeout(corte);
+  }
+}
+
+module.exports = { hablar, hablarEnVivo, SALIDA };

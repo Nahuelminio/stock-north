@@ -15,7 +15,7 @@ const pool = require("../db");
 const { dolarHoy } = require("../dolar");
 const { transcribir } = require("../asistente/transcribir");
 const { listaDeStock } = require("../asistente/listaStock");
-const { hablar } = require("../asistente/voz");
+const { hablar, hablarEnVivo } = require("../asistente/voz");
 const { responder } = require("../asistente/cerebro");
 const { avisarTelegram } = require("../services/telegram");
 
@@ -143,27 +143,30 @@ router.post(
       // viaja en las cabeceras. Así la placa pide una sola vez en vez de
       // contestar y después ir a buscar el audio.
       if (req.query.voz === "1") {
-        const marcaVoz = Date.now();
-        const v = await hablar(corto);
-        tiempos.hablar = Date.now() - marcaVoz;
-        const resumen = `oir=${tiempos.oir} pensar=${tiempos.pensar} hablar=${tiempos.hablar} total=${Date.now() - reloj}`;
-        console.log("⏱  " + resumen);
-        if (v.ok) {
-          res.set({
-            "Content-Type": "audio/L16; rate=16000",
-            "X-Pantalla": encodeURIComponent(pantalla),
-            "X-Escuchado": encodeURIComponent(t.texto),
-            "X-Tiempos": resumen,
-          });
-          return res.send(v.pcm);
-        }
-        // Sin voz, al menos que quede el texto
-        console.warn("voz:", v.error);
+        // Las cabeceras salen primero, antes del audio: así la placa ya puede
+        // mostrar la respuesta en pantalla mientras la voz todavía se genera.
         res.set({
+          "Content-Type": "audio/L16; rate=16000",
           "X-Pantalla": encodeURIComponent(pantalla),
           "X-Escuchado": encodeURIComponent(t.texto),
+          "X-Tiempos": `oir=${tiempos.oir} pensar=${tiempos.pensar}`,
         });
-        return res.status(204).end();
+        res.flushHeaders();
+
+        const marcaVoz = Date.now();
+        let primero = 0;
+        const v = await hablarEnVivo(corto, (trozo) => {
+          if (!primero) primero = Date.now() - marcaVoz;
+          res.write(trozo);
+        });
+        tiempos.hablar = Date.now() - marcaVoz;
+
+        console.log(`⏱  oir=${tiempos.oir} pensar=${tiempos.pensar} ` +
+                    `primera_voz=${primero} hablar=${tiempos.hablar} ` +
+                    `total=${Date.now() - reloj}`);
+
+        if (!v.ok) console.warn("voz:", v.error);
+        return res.end();
       }
 
       res.json({

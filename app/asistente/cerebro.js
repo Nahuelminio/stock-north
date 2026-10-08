@@ -19,6 +19,11 @@ const client = new Anthropic(); // toma ANTHROPIC_API_KEY del entorno
 // contesta mucho más rápido que Opus, que es lo que importa en un chat.
 const MODELO = process.env.ASISTENTE_MODELO || "claude-sonnet-5-5";
 
+// Lo que se pregunta hablando se contesta en una frase y casi siempre con una
+// sola consulta. Haiku lo hace igual de bien y bastante más rápido, y en una
+// conversación hablada un segundo se nota mucho más que en el chat.
+const MODELO_VOZ = process.env.ASISTENTE_MODELO_VOZ || "claude-haiku-4-5-20251001";
+
 // Tope de vueltas de herramientas por mensaje. Si lo toca es que algo se trabó.
 const MAX_VUELTAS = 8;
 
@@ -96,7 +101,7 @@ async function responder(chatId, texto) {
 
   for (let vuelta = 0; vuelta < MAX_VUELTAS; vuelta++) {
     const r = await client.messages.create({
-      model: MODELO,
+      model: porVoz ? MODELO_VOZ : MODELO,
       max_tokens: 4000,
       system: instrucciones() + (porVoz
         ? "\n\nEsto te lo están preguntando por voz y tu respuesta se va a " +
