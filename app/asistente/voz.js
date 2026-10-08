@@ -21,11 +21,16 @@ const TIMEOUT_MS = 20000;
 // Cómo tiene que sonar. Es un aparato que vive en el mostrador y le contesta al
 // dueño todo el día: tiene que sonar a alguien conocido, no a contestador.
 const TONO =
-  "Hablás en español rioplatense, de Argentina. Sos Vapi, el asistente del " +
-  "negocio. Tono cálido y cercano, como alguien de confianza que contesta sin " +
-  "apuro pero sin hacerse el interesante. Natural, nada de entonación de " +
-  "locutor ni de voz institucional. Si la frase es una confirmación, decila " +
-  "con ganas, no con desgano.";
+  "Hablás en español rioplatense, de Argentina, con acento porteño natural: " +
+  "voseo, y la 'll' y la 'y' como en Buenos Aires. Nada de acento neutro de " +
+  "doblaje latino ni de locutor. Sos Vapi, el asistente del negocio, y le " +
+  "hablás al dueño. Sonás como un amigo que le está dando una mano: cálido, " +
+  "con buena onda, relajado. Si es una confirmación, decila con ganas. Si son " +
+  "números, decilos tranquilo y claro, sin apurarte.";
+
+/** Las voces que ofrece OpenAI, para poder probarlas desde el bot. */
+const VOCES = ["alloy", "ash", "ballad", "coral", "echo", "fable",
+               "nova", "onyx", "sage", "shimmer", "verse"];
 
 const ENTRADA = 24000;   // lo que entrega OpenAI
 const SALIDA  = 16000;   // lo que usa la placa
@@ -197,4 +202,55 @@ async function hablarEnVivo(texto, alLlegar) {
   }
 }
 
-module.exports = { hablar, hablarEnVivo, SALIDA };
+
+/**
+ * La misma frase pero en un formato que se pueda mandar por Telegram, y con la
+ * voz que se le pida.
+ *
+ * Sirve para elegir voz de oído: el aparato usa la que diga VOZ_NOMBRE, y
+ * probarlas una por una cambiando la variable y redeployando es insufrible.
+ * OpenAI entrega opus directamente, que es justo lo que Telegram quiere para
+ * una nota de voz, así que no hay que convertir nada.
+ *
+ * @param {string} texto
+ * @param {{voz?: string, formato?: string}} [opts]
+ * @returns {Promise<{ok: boolean, audio?: Buffer, error?: string}>}
+ */
+async function hablarComprimido(texto, opts = {}) {
+  if (!process.env.OPENAI_API_KEY) return { ok: false, error: "Falta OPENAI_API_KEY" };
+  const limpio = String(texto || "").trim();
+  if (!limpio) return { ok: false, error: "No hay nada que decir" };
+
+  const ctrl = new AbortController();
+  const corte = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const r = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: MODELO,
+        voice: VOCES.includes(opts.voz) ? opts.voz : VOZ,
+        input: limpio.slice(0, 500),
+        response_format: opts.formato || "opus",
+        instructions: TONO,
+      }),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) {
+      const detalle = await r.text().catch(() => "");
+      console.error("❌ voz:", r.status, detalle.slice(0, 200));
+      return { ok: false, error: `El servicio de voz contestó ${r.status}` };
+    }
+    return { ok: true, audio: Buffer.from(await r.arrayBuffer()) };
+  } catch (e) {
+    console.error("❌ voz:", e.message);
+    return { ok: false, error: e.name === "AbortError" ? "Tardó demasiado" : "No se pudo generar la voz" };
+  } finally {
+    clearTimeout(corte);
+  }
+}
+
+module.exports = { hablar, hablarEnVivo, hablarComprimido, VOCES, VOZ, SALIDA };

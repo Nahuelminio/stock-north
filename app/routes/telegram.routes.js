@@ -17,6 +17,7 @@ const router = express.Router();
 const { responder, olvidar } = require("../asistente/cerebro");
 const { transcribir } = require("../asistente/transcribir");
 const { listaDeStock, sucursalesDisponibles } = require("../asistente/listaStock");
+const { hablarComprimido, VOCES, VOZ } = require("../asistente/voz");
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const SECRETO = process.env.TELEGRAM_WEBHOOK_SECRET || "";
@@ -84,6 +85,56 @@ async function enviar(chatId, texto) {
       text: parte,
       disable_web_page_preview: true,
     });
+  }
+}
+
+/**
+ * Manda una nota de voz. Va por multipart porque el audio es un archivo, no
+ * texto, así que no entra en el api() de arriba que manda JSON.
+ */
+async function enviarVoz(chatId, audio, pie) {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("caption", pie || "");
+  form.append("voice", new Blob([audio], { type: "audio/ogg" }), "vapi.ogg");
+  const r = await fetch(`https://api.telegram.org/bot${TOKEN}/sendVoice`, {
+    method: "POST", body: form,
+  }).catch((e) => { console.error("Telegram voz:", e.message); return null; });
+  if (r && !r.ok) console.error("Telegram voz:", r.status, (await r.text()).slice(0, 200));
+}
+
+const RE_VOZ = /^\/voz(?:@\w+)?\b\s*(.*)$/i;
+
+/**
+ * /voz manda la misma frase con las once voces, para elegir de oído; /voz
+ * <nombre> manda solo esa. Elegir por el nombre no sirve: "coral" y "sage"
+ * no dicen nada hasta que las escuchás diciendo lo que el aparato dice.
+ */
+async function probarVoces(chatId, pedida) {
+  const FRASE = "¡Ey! Listo, ya te mandé la lista de Central al Telegram. " +
+                "Hay doce modelos y doscientas diecisiete unidades. ¿Algo más?";
+  const cuales = pedida && VOCES.includes(pedida.toLowerCase())
+    ? [pedida.toLowerCase()]
+    : pedida
+      ? null
+      : VOCES;
+
+  if (!cuales) {
+    await enviar(chatId, `No conozco la voz "${pedida}". Las que hay:\n` +
+      VOCES.join(" · ") + `\n\nAhora está puesta: ${VOZ}`);
+    return;
+  }
+
+  if (cuales.length > 1) {
+    await enviar(chatId, `Van las ${VOCES.length} voces con la misma frase. ` +
+      `La que está puesta ahora es ${VOZ}. Cuando elijas, decime cuál y la dejo fija.`);
+  }
+
+  for (const voz of cuales) {
+    api("sendChatAction", { chat_id: chatId, action: "record_voice" });
+    const v = await hablarComprimido(FRASE, { voz });
+    if (!v.ok) { await enviar(chatId, `${voz}: ${v.error}`); continue; }
+    await enviarVoz(chatId, v.audio, voz === VOZ ? `${voz} (la actual)` : voz);
   }
 }
 
@@ -243,6 +294,7 @@ router.post("/telegram/webhook/:secreto", async (req, res) => {
         "- qué margen dejaron los pedidos de septiembre\n\n" +
         "Para la lista de siempre, la que se manda por WhatsApp:\n" +
         "/stock central · /stock weekend · /stock todas\n\n" +
+        "/voz te manda la misma frase con todas las voces, para elegir.\n" +
         "/olvidar borra lo que veníamos hablando.");
       return;
     }
@@ -255,6 +307,9 @@ router.post("/telegram/webhook/:secreto", async (req, res) => {
     // al instante y no gasta una llamada. Es el comando que se usaba en n8n.
     const cmdStock = texto.match(RE_STOCK);
     if (cmdStock) { await mandarStock(chatId, cmdStock[1].trim()); return; }
+
+    const cmdVoz = texto.match(RE_VOZ);
+    if (cmdVoz) { await probarVoces(chatId, cmdVoz[1].trim()); return; }
 
     if (texto === "/olvidar") {
       olvidar(chatId);
