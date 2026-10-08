@@ -16,6 +16,7 @@ router.get("/", authenticate, async (req, res) => {
         p.nombre AS producto_nombre,
         g.id AS gusto_id,
         g.nombre AS gusto,
+        g.activo,
         s.apodo AS apodo,
         g.codigo_barra,
         s.id AS sucursal_id,
@@ -26,7 +27,10 @@ router.get("/", authenticate, async (req, res) => {
       JOIN gustos g ON g.producto_id = p.id
       JOIN stock st ON st.gusto_id = g.id
       JOIN sucursales s ON s.id = st.sucursal_id
-      WHERE g.activo = 1
+      -- Igual que en /disponibles: lo discontinuado sigue a la vista mientras
+      -- quede stock. Si no, la sucursal ve unidades en Pods por Sucursal que no
+      -- existen acá y no puede ni venderlas ni corregirlas.
+      WHERE (g.activo = 1 OR st.cantidad > 0)
     `;
 
     const params = [];
@@ -329,7 +333,11 @@ router.get("/disponibles", authenticate, async (req, res) => {
       FROM productos p
       JOIN gustos g ON g.producto_id = p.id
       JOIN stock st ON st.gusto_id = g.id
-      WHERE st.sucursal_id = ? AND g.activo = 1`,
+      -- Un gusto dado de baja que todavía tiene unidades se puede vender: la
+      -- sucursal lo tiene en la mano, y si no aparece en la lista no hay forma
+      -- de sacarlo del sistema. Al llegar a cero deja de ofrecerse solo, que es
+      -- justo lo que se quiere de algo discontinuado.
+      WHERE st.sucursal_id = ? AND (g.activo = 1 OR st.cantidad > 0)`,
       [sucursal_id]
     );
     res.json(results);
