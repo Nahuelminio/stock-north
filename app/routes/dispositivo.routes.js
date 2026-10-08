@@ -15,7 +15,7 @@ const pool = require("../db");
 const { dolarHoy } = require("../dolar");
 const { transcribir } = require("../asistente/transcribir");
 const { listaDeStock } = require("../asistente/listaStock");
-const { hablar } = require("../asistente/voz");
+const { hablar, hablarEnVivo } = require("../asistente/voz");
 const { responder } = require("../asistente/cerebro");
 const { avisarTelegram } = require("../services/telegram");
 
@@ -180,37 +180,40 @@ router.post(
       const pantalla = corto.length > 90 ? corto.slice(0, 87) + "..." : corto;
 
       if (req.query.voz === "1") {
-        // El audio va de una sola pieza, con el largo en la cabecera.
+        // Va en streaming: esperar la frase entera antes de empezar a
+        // mandarla agrega los dos segundos que tarda la voz, y lo que se nota
+        // en una conversación es cuánto tardás en escuchar, no el total.
         //
-        // La placa lee el socket crudo (getStreamPtr), así que no sabe de
-        // chunked: cualquier cosa que no sea audio la reproduce como si lo
-        // fuera. Mandándolo de a pedazos no hay largo que anunciar, y aunque
-        // acá se apague el troceado, el proxy que Render tiene adelante
-        // reenvía igual la respuesta troceada al cliente. Los tamaños de cada
-        // bloque quedan metidos entre las muestras y suenan a ruido áspero
-        // encima de la voz: es lo que no se arreglaba bajando el volumen.
+        // Sin largo que anunciar, la respuesta sale troceada (el tamaño de cada
+        // bloque viaja dentro del flujo) y encima el proxy de adelante la
+        // trocea igual aunque acá se apague. Eso ensuciaba el audio mientras la
+        // placa leía el socket pelado; ahora lo decodifica como corresponde.
         //
-        // Con Content-Length nadie trocea nada y el cuerpo llega limpio. Se
-        // pierde el arranque anticipado de la voz: va la frase entera primero.
+        // Las cabeceras salen primero, antes del audio: así la placa ya puede
+        // mostrar la respuesta en pantalla mientras la voz todavía se genera.
+        res.set({
+          Connection: "close",
+          "Content-Type": "audio/L16; rate=16000",
+          "X-Pantalla": encodeURIComponent(pantalla),
+          "X-Escuchado": encodeURIComponent(t.texto),
+          "X-Tiempos": `oir=${tiempos.oir} pensar=${tiempos.pensar}`,
+        });
+        res.flushHeaders();
+
         const marcaVoz = Date.now();
-        const v = await hablar(corto);
+        let primero = 0;
+        const v = await hablarEnVivo(corto, (trozo) => {
+          if (!primero) primero = Date.now() - marcaVoz;
+          res.write(trozo);
+        });
         tiempos.hablar = Date.now() - marcaVoz;
 
         console.log(`⏱  oir=${tiempos.oir} pensar=${tiempos.pensar} ` +
-                    `hablar=${tiempos.hablar} total=${Date.now() - reloj}`);
+                    `primera_voz=${primero} hablar=${tiempos.hablar} ` +
+                    `total=${Date.now() - reloj}`);
 
-        res.set({
-          "Content-Type": "audio/L16; rate=16000",
-          "Content-Length": v.ok ? v.pcm.length : 0,
-          "X-Pantalla": encodeURIComponent(pantalla),
-          "X-Escuchado": encodeURIComponent(t.texto),
-          "X-Tiempos": `oir=${tiempos.oir} pensar=${tiempos.pensar} hablar=${tiempos.hablar}`,
-        });
-        if (!v.ok) {
-          console.warn("voz:", v.error);
-          return res.end();
-        }
-        return res.end(v.pcm);
+        if (!v.ok) console.warn("voz:", v.error);
+        return res.end();
       }
 
       res.json({
