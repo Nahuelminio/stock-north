@@ -233,7 +233,7 @@ router.post("/telegram/webhook/:secreto", async (req, res) => {
 
     if (texto === "/start" || texto === "/ayuda") {
       await enviar(chatId,
-        "Preguntame lo que quieras del negocio, como se lo preguntarías a alguien.\n\n" +
+        "Soy Vapi. Preguntame lo que quieras del negocio, como se lo preguntarías a alguien.\n\n" +
         "Por ejemplo:\n" +
         "- cuánto ice king me queda\n" +
         "- pasame la lista de weekend\n" +

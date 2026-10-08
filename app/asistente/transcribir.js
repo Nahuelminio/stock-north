@@ -42,9 +42,10 @@ async function transcribir(audio, nombre = "audio.ogg") {
   // Los nombres propios del negocio, para que no los escriba de oído
   form.append(
     "prompt",
-    "Vapes y shishas. Marcas: Elfbar, Lost Mary, Ignite, Geekbar, Dinner Lady, " +
-    "Oxbar, Maskking, Nasty. Sucursales: Central, Garupá, Itaembé Guazú, Santa Ana, " +
-    "Santo Tomé, Brickell, Zoe Tec, Weekend Bebidas, North Punto."
+    "El asistente se llama Vapi. Vapes y shishas. Marcas: Elfbar, Lost Mary, " +
+    "Ignite, Geekbar, Dinner Lady, Oxbar, Maskking, Nasty. Sucursales: Central, " +
+    "Garupá, Itaembé Guazú, Santa Ana, Santo Tomé, Brickell, Zoe Tec, " +
+    "Weekend Bebidas, North Punto."
   );
 
   const ctrl = new AbortController();

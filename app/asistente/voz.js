@@ -12,8 +12,20 @@
  */
 
 const MODELO = process.env.VOZ_MODELO || "gpt-4o-mini-tts";
-const VOZ = process.env.VOZ_NOMBRE || "verse";
+// "coral" es de las más cálidas y suena a persona, no a locutor de aeropuerto.
+// Se cambia con VOZ_NOMBRE: alloy, ash, ballad, coral, echo, fable, nova,
+// onyx, sage, shimmer y verse.
+const VOZ = process.env.VOZ_NOMBRE || "coral";
 const TIMEOUT_MS = 20000;
+
+// Cómo tiene que sonar. Es un aparato que vive en el mostrador y le contesta al
+// dueño todo el día: tiene que sonar a alguien conocido, no a contestador.
+const TONO =
+  "Hablás en español rioplatense, de Argentina. Sos Vapi, el asistente del " +
+  "negocio. Tono cálido y cercano, como alguien de confianza que contesta sin " +
+  "apuro pero sin hacerse el interesante. Natural, nada de entonación de " +
+  "locutor ni de voz institucional. Si la frase es una confirmación, decila " +
+  "con ganas, no con desgano.";
 
 const ENTRADA = 24000;   // lo que entrega OpenAI
 const SALIDA  = 16000;   // lo que usa la placa
@@ -64,8 +76,7 @@ async function hablar(texto) {
         input: limpio.slice(0, 500),
         response_format: "pcm",
         // Que suene como alguien del negocio contestando, no como un locutor
-        instructions: "Hablá en español rioplatense, con naturalidad y sin " +
-                      "exagerar la entonación. Tono tranquilo y breve.",
+        instructions: TONO,
       }),
       signal: ctrl.signal,
     });
@@ -129,8 +140,7 @@ async function hablarEnVivo(texto, alLlegar) {
         voice: VOZ,
         input: limpio.slice(0, 500),
         response_format: "pcm",
-        instructions: "Hablá en español rioplatense, con naturalidad y sin " +
-                      "exagerar la entonación. Tono tranquilo y breve.",
+        instructions: TONO,
       }),
       signal: ctrl.signal,
     });
