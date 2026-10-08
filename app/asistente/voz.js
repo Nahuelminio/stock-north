@@ -12,10 +12,10 @@
  */
 
 const MODELO = process.env.VOZ_MODELO || "gpt-4o-mini-tts";
-// "coral" es de las más cálidas y suena a persona, no a locutor de aeropuerto.
-// Se cambia con VOZ_NOMBRE: alloy, ash, ballad, coral, echo, fable, nova,
-// onyx, sage, shimmer y verse.
-const VOZ = process.env.VOZ_NOMBRE || "coral";
+// "nova" es la que eligió Nahuel escuchando las once con /voz: es la que suena
+// más a alguien del negocio y menos a locutora. Se cambia con VOZ_NOMBRE sin
+// tocar código, y con /voz se vuelven a comparar todas.
+const VOZ = process.env.VOZ_NOMBRE || "nova";
 const TIMEOUT_MS = 20000;
 
 // Cómo tiene que sonar. Es un aparato que vive en el mostrador y le contesta al
