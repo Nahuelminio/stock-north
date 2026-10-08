@@ -114,13 +114,21 @@ router.post(
       return res.status(400).json({ error: "sin audio" });
     }
 
+    // Se mide cada etapa y se devuelve en una cabecera: sin esto, optimizar es
+    // adivinar cuál de las tres partes es la lenta.
+    const reloj = Date.now();
+    const tiempos = {};
+
     try {
       const t = await transcribir(audio, req.query.formato === "wav" ? "nota.wav" : "nota.ogg");
+      tiempos.oir = Date.now() - reloj;
       if (!t.ok) {
         return res.json({ ok: false, pantalla: t.falta_clave ? "sin transcriptor" : "no entendi" });
       }
 
+      const marca = Date.now();
       const respuesta = await responder("dispositivo", t.texto);
+      tiempos.pensar = Date.now() - marca;
 
       // A Telegram va todo, que es donde se lee cómodo
       if (CHAT) {
@@ -135,12 +143,17 @@ router.post(
       // viaja en las cabeceras. Así la placa pide una sola vez en vez de
       // contestar y después ir a buscar el audio.
       if (req.query.voz === "1") {
+        const marcaVoz = Date.now();
         const v = await hablar(corto);
+        tiempos.hablar = Date.now() - marcaVoz;
+        const resumen = `oir=${tiempos.oir} pensar=${tiempos.pensar} hablar=${tiempos.hablar} total=${Date.now() - reloj}`;
+        console.log("⏱  " + resumen);
         if (v.ok) {
           res.set({
             "Content-Type": "audio/L16; rate=16000",
             "X-Pantalla": encodeURIComponent(pantalla),
             "X-Escuchado": encodeURIComponent(t.texto),
+            "X-Tiempos": resumen,
           });
           return res.send(v.pcm);
         }

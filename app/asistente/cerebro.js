@@ -83,6 +83,9 @@ Todo lo demás es solo lectura. Si te piden aprobar un pago, cambiar un precio, 
  */
 async function responder(chatId, texto) {
   const clave = String(chatId);
+  // Lo que se le pregunta al aparato se contesta en voz alta: una respuesta
+  // larga tarda más en generarse y encima aburre escucharla.
+  const porVoz = clave === "dispositivo";
   const turno = (turnos.get(clave) || 0) + 1;
   turnos.set(clave, turno);
 
@@ -95,7 +98,13 @@ async function responder(chatId, texto) {
     const r = await client.messages.create({
       model: MODELO,
       max_tokens: 4000,
-      system: instrucciones(),
+      system: instrucciones() + (porVoz
+        ? "\n\nEsto te lo están preguntando por voz y tu respuesta se va a " +
+          "escuchar en un parlante. Contestá en UNA sola frase corta, como se " +
+          "contesta hablando. Nada de listas ni de enumerar: si hay muchos " +
+          "datos, decí el que importa. Si te piden que mandes algo, mandalo y " +
+          "confirmá en pocas palabras."
+        : ""),
       tools: catalogo(),
       messages: mensajes,
     });

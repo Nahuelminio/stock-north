@@ -12,7 +12,9 @@
  * para que quien lo llame pueda explicar qué falta en vez de quedarse mudo.
  */
 
-const MODELO = process.env.TRANSCRIPTOR_MODELO || "whisper-1";
+// gpt-4o-mini-transcribe es bastante más rápido que whisper-1 y entiende
+// igual de bien el castellano de acá. Se cambia con TRANSCRIPTOR_MODELO.
+const MODELO = process.env.TRANSCRIPTOR_MODELO || "gpt-4o-mini-transcribe";
 const LIMITE_MB = 24;   // el límite de la API son 25, dejamos margen
 const TIMEOUT_MS = 30000;
 
