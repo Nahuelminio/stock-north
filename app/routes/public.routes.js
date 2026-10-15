@@ -139,7 +139,7 @@ router.get("/public/lista-proveedor", publicCors, async (_req, res) => {
 router.get("/lista", publicCors, async (_req, res) => {
   try {
     const [filas] = await pool.promise().query(
-      `SELECT modelo, gusto, hay FROM catalogo_proveedor
+      `SELECT nombre, modelo, gusto, hay FROM catalogo_proveedor
         WHERE presente = 1 ORDER BY modelo, gusto`
     );
     const [[info]] = await pool.promise().query(
@@ -169,6 +169,15 @@ router.get("/lista", publicCors, async (_req, res) => {
         <ul>${items}</ul></section>`;
     }).join("");
 
+    // La misma cosa de corrido, por si se busca de a uno. Van las dos armadas y
+    // se cambia con el botón: son los mismos datos, no hay nada que volver a
+    // pedir, y así no hay que elegir una por todos.
+    const corrida = [...filas]
+      .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"))
+      .map((f) => `<li class="${f.hay ? "" : "no"}"
+        data-busca="${esc(f.nombre.toLowerCase())}">${esc(f.nombre)}</li>`)
+      .join("");
+
     res.set("Content-Type", "text/html; charset=utf-8");
     res.send(`<!doctype html>
 <html lang="es"><head>
@@ -196,6 +205,13 @@ router.get("/lista", publicCors, async (_req, res) => {
        display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
        gap: 4px 14px; }
   li { padding: 3px 0; font-size: .95rem; }
+  #corrida { list-style: none; margin: 0; padding: 0; display: block; }
+  #corrida li { border-bottom: 1px solid #141c26; padding: 7px 0; }
+  .modo { max-width: 760px; margin: 0 auto 16px; display: flex; gap: 8px; }
+  .modo button { flex: 1; padding: 9px; border-radius: 9px; cursor: pointer;
+                 border: 1px solid #243040; background: #121922; color: #8b98a5;
+                 font-size: .9rem; font-family: inherit; }
+  .modo button.activo { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
   li.no { color: #64748b; text-decoration: line-through; }
   .nada { color: #8b98a5; text-align: center; padding: 30px 0; display: none; }
   footer { max-width: 760px; margin: 30px auto 0; color: #64748b;
@@ -208,22 +224,51 @@ router.get("/lista", publicCors, async (_req, res) => {
     actualizada el ${esc(cuando)}</div>
 </header>
 <input id="buscar" type="search" placeholder="Buscar modelo o gusto..." autocomplete="off">
-<main>${secciones}<div class="nada">No encontré nada con eso.</div></main>
+<div class="modo">
+  <button id="btnLista" class="activo">Todo en una lista</button>
+  <button id="btnModelos">Por modelo</button>
+</div>
+<main>
+  <ul id="corrida">${corrida}</ul>
+  <div id="agrupado" style="display:none">${secciones}</div>
+  <div class="nada">No encontré nada con eso.</div>
+</main>
 <footer>Tachado = sin stock. Se actualiza sola varias veces por día.</footer>
 <script>
   const campo = document.getElementById("buscar");
   const bloques = [...document.querySelectorAll("section")];
+  const sueltos = [...document.querySelectorAll("#corrida li")];
+  const corrida = document.getElementById("corrida");
+  const agrupado = document.getElementById("agrupado");
   const nada = document.querySelector(".nada");
-  campo.addEventListener("input", () => {
+  const btnLista = document.getElementById("btnLista");
+  const btnModelos = document.getElementById("btnModelos");
+  let porModelo = false;
+
+  function filtrar() {
     const q = campo.value.trim().toLowerCase();
+    const cuales = porModelo ? bloques : sueltos;
     let visibles = 0;
-    for (const b of bloques) {
-      const ok = !q || b.dataset.busca.includes(q);
-      b.style.display = ok ? "" : "none";
+    for (const el of cuales) {
+      const ok = !q || el.dataset.busca.includes(q);
+      el.style.display = ok ? "" : "none";
       if (ok) visibles++;
     }
     nada.style.display = visibles ? "none" : "block";
-  });
+  }
+
+  function modo(agrupar) {
+    porModelo = agrupar;
+    corrida.style.display = agrupar ? "none" : "block";
+    agrupado.style.display = agrupar ? "block" : "none";
+    btnModelos.classList.toggle("activo", agrupar);
+    btnLista.classList.toggle("activo", !agrupar);
+    filtrar();
+  }
+
+  campo.addEventListener("input", filtrar);
+  btnLista.addEventListener("click", () => modo(false));
+  btnModelos.addEventListener("click", () => modo(true));
 </script>
 </body></html>`);
   } catch (e) {
