@@ -73,4 +73,8 @@ app.use("/auth", require("./routes/auth.routes"));
 
 app.listen(PORT, () => {
   console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
+
+  // La lista del proveedor se refresca sola: una pasada al minuto de levantar y
+  // después cada seis horas. Son siete pedidos a su tienda, nada para nadie.
+  require("./services/catalogoProveedor").arrancar();
 });

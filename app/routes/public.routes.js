@@ -93,6 +93,145 @@ function toNullOrTrim(v) {
  * Lista pública de sucursales. Muestra el apodo si existe.
  * Devuelve: [{ id, nombre, nombre_real, apodo }]
  */
+/**
+ * GET /public/lista-proveedor
+ * Qué modelos y gustos tiene el proveedor, agrupado y sin un solo precio.
+ *
+ * Es para pasarle a los mayoristas: lo único que necesitan saber es qué se
+ * puede pedir. El precio lo pone Nahuel cuando arma el pedido, así que acá no
+ * viaja ni el costo ni la venta.
+ */
+router.get("/public/lista-proveedor", publicCors, async (_req, res) => {
+  try {
+    const [filas] = await pool.promise().query(
+      `SELECT modelo, gusto, hay FROM catalogo_proveedor
+        WHERE presente = 1 ORDER BY modelo, gusto`
+    );
+    const [[info]] = await pool.promise().query(
+      "SELECT MAX(visto) AS actualizado FROM catalogo_proveedor WHERE presente = 1"
+    );
+
+    const modelos = [];
+    for (const f of filas) {
+      let m = modelos[modelos.length - 1];
+      if (!m || m.modelo !== f.modelo) {
+        m = { modelo: f.modelo, gustos: [] };
+        modelos.push(m);
+      }
+      m.gustos.push({ gusto: f.gusto, hay: Boolean(f.hay) });
+    }
+
+    res.json({ actualizado: info.actualizado, total: filas.length, modelos });
+  } catch (e) {
+    console.error("❌ GET /public/lista-proveedor:", e);
+    res.status(500).json({ error: "error" });
+  }
+});
+
+/**
+ * GET /lista
+ * La misma lista pero como página, que es lo que se manda por WhatsApp.
+ *
+ * Se arma acá y no en el frontend de React a propósito: es un link que se pasa
+ * a gente de afuera, tiene que abrir en un segundo en cualquier teléfono y no
+ * depende de que haya que deployar otra cosa más.
+ */
+router.get("/lista", publicCors, async (_req, res) => {
+  try {
+    const [filas] = await pool.promise().query(
+      `SELECT modelo, gusto, hay FROM catalogo_proveedor
+        WHERE presente = 1 ORDER BY modelo, gusto`
+    );
+    const [[info]] = await pool.promise().query(
+      "SELECT MAX(visto) AS actualizado FROM catalogo_proveedor WHERE presente = 1"
+    );
+
+    const esc = (t) => String(t).replace(/[&<>"]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+    const porModelo = new Map();
+    for (const f of filas) {
+      if (!porModelo.has(f.modelo)) porModelo.set(f.modelo, []);
+      porModelo.get(f.modelo).push(f);
+    }
+
+    const cuando = info.actualizado
+      ? new Date(info.actualizado).toLocaleString("es-AR",
+          { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })
+      : "nunca";
+
+    const secciones = [...porModelo.entries()].map(([modelo, gustos]) => {
+      const items = gustos.map((g) =>
+        `<li class="${g.hay ? "" : "no"}">${esc(g.gusto || "—")}</li>`).join("");
+      return `<section data-busca="${esc((modelo + " " +
+        gustos.map((g) => g.gusto).join(" ")).toLowerCase())}">
+        <h2>${esc(modelo)} <span>${gustos.length}</span></h2>
+        <ul>${items}</ul></section>`;
+    }).join("");
+
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.send(`<!doctype html>
+<html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lista de pedidos — The North Shop</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: #0b0f14; color: #e6edf3;
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { max-width: 760px; margin: 0 auto 18px; }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  .sub { color: #8b98a5; font-size: .85rem; }
+  #buscar { width: 100%; max-width: 760px; margin: 0 auto 20px; display: block;
+            padding: 12px 14px; border-radius: 10px; border: 1px solid #243040;
+            background: #121922; color: #e6edf3; font-size: 1rem; }
+  main { max-width: 760px; margin: 0 auto; }
+  section { margin-bottom: 22px; }
+  h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .5px;
+       color: #7dd3fc; margin: 0 0 8px; border-bottom: 1px solid #1d2733;
+       padding-bottom: 6px; }
+  h2 span { color: #64748b; font-weight: 400; }
+  ul { list-style: none; margin: 0; padding: 0;
+       display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+       gap: 4px 14px; }
+  li { padding: 3px 0; font-size: .95rem; }
+  li.no { color: #64748b; text-decoration: line-through; }
+  .nada { color: #8b98a5; text-align: center; padding: 30px 0; display: none; }
+  footer { max-width: 760px; margin: 30px auto 0; color: #64748b;
+           font-size: .8rem; text-align: center; }
+</style></head>
+<body>
+<header>
+  <h1>Lista de pedidos</h1>
+  <div class="sub">${filas.length} productos en ${porModelo.size} modelos ·
+    actualizada el ${esc(cuando)}</div>
+</header>
+<input id="buscar" type="search" placeholder="Buscar modelo o gusto..." autocomplete="off">
+<main>${secciones}<div class="nada">No encontré nada con eso.</div></main>
+<footer>Tachado = sin stock. Se actualiza sola varias veces por día.</footer>
+<script>
+  const campo = document.getElementById("buscar");
+  const bloques = [...document.querySelectorAll("section")];
+  const nada = document.querySelector(".nada");
+  campo.addEventListener("input", () => {
+    const q = campo.value.trim().toLowerCase();
+    let visibles = 0;
+    for (const b of bloques) {
+      const ok = !q || b.dataset.busca.includes(q);
+      b.style.display = ok ? "" : "none";
+      if (ok) visibles++;
+    }
+    nada.style.display = visibles ? "none" : "block";
+  });
+</script>
+</body></html>`);
+  } catch (e) {
+    console.error("❌ GET /lista:", e);
+    res.status(500).send("No pude armar la lista.");
+  }
+});
+
 router.get("/public/sucursales", publicCors, async (_req, res) => {
   try {
     const [rows] = await pool.promise().query(`
