@@ -6,6 +6,7 @@ const pool = require("../db");
 const authenticate = require("../middlewares/authenticate");
 const { avisarTelegram } = require("../services/telegram");
 const { MARGEN_USD } = require("../services/catalogoProveedor");
+const { stockParaMayoristas, stockPorClaves } = require("../services/stockMayorista");
 
 // CORS SOLO para endpoints públicos
 const publicCors = cors({ origin: "*", credentials: false });
@@ -143,13 +144,40 @@ router.post("/public/pedido-lista", publicCors, express.json({ limit: "256kb" })
     try {
       // El nombre sale del catálogo, no de lo que mande el navegador: así no se
       // puede pedir "100 unidades de <lo que a uno se le ocurra escribir>".
-      // El precio sale del catálogo, igual que el nombre: el navegador manda
-      // qué y cuánto, nunca a cuánto.
-      const [filas] = await pool.promise().query(
-        `SELECT sku, nombre, modelo, ROUND(precio_usd + ?, 2) AS precio
-           FROM catalogo_proveedor WHERE sku IN (?)`,
-        [MARGEN_USD, [...pedido.keys()]]
-      );
+      // Un pedido puede traer de las dos secciones: lo que ya hay en Central y
+      // lo que va a pedido. Se resuelven por separado porque son dos fuentes
+      // distintas, y el precio y el nombre salen de ellas, nunca del navegador:
+      // este manda qué y cuánto, jamás a cuánto.
+      const claves = [...pedido.keys()];
+      const deStock = claves.filter((k) => k.startsWith("stock-"));
+      const deProveedor = claves.filter((k) => !k.startsWith("stock-"));
+
+      const filas = [];
+
+      if (deProveedor.length) {
+        const [cat] = await pool.promise().query(
+          `SELECT sku, nombre, ROUND(precio_usd + ?, 2) AS precio
+             FROM catalogo_proveedor
+            WHERE sku IN (?) AND presente = 1 AND hay = 1 AND precio_usd IS NOT NULL`,
+          [MARGEN_USD, deProveedor]
+        );
+        for (const f of cat) filas.push({ ...f, origen: "proveedor" });
+      }
+
+      if (deStock.length) {
+        for (const f of await stockPorClaves(deStock)) {
+          // No se puede pedir más de lo que hay: es stock real, no un catálogo
+          const pedida = pedido.get(f.clave);
+          if (pedida > f.cantidad) pedido.set(f.clave, f.cantidad);
+          filas.push({
+            sku: f.clave,
+            nombre: `${f.producto} — ${f.gusto}`,
+            precio: f.precio,
+            origen: "stock",
+          });
+        }
+      }
+
       if (!filas.length) return res.status(400).json({ error: "No reconocí ningún producto" });
 
       const conn = await pool.promise().getConnection();
@@ -161,9 +189,10 @@ router.post("/public/pedido-lista", publicCors, express.json({ limit: "256kb" })
         );
         for (const f of filas) {
           await conn.query(
-            `INSERT INTO pedidos_lista_items (pedido_id, sku, nombre, precio_usd, cantidad)
-             VALUES (?, ?, ?, ?, ?)`,
-            [r.insertId, f.sku, f.nombre, f.precio, pedido.get(f.sku)]
+            `INSERT INTO pedidos_lista_items
+               (pedido_id, sku, origen, nombre, precio_usd, cantidad)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [r.insertId, f.sku, f.origen, f.nombre, f.precio, pedido.get(f.sku)]
           );
         }
         await conn.commit();
@@ -172,14 +201,17 @@ router.post("/public/pedido-lista", publicCors, express.json({ limit: "256kb" })
 
         const unidades = filas.reduce((a, f) => a + pedido.get(f.sku), 0);
         const plata = filas.reduce((a, f) => a + pedido.get(f.sku) * Number(f.precio || 0), 0);
-        const renglones = filas
-          .map((f) => `${pedido.get(f.sku)}x ${f.nombre} — US$ ${Number(f.precio).toFixed(2)}`)
-          .sort()
-          .join("\n");
+        const renglon = (f) =>
+          `${pedido.get(f.sku)}x ${f.nombre} — US$ ${Number(f.precio).toFixed(2)}`;
+        const hay = filas.filter((f) => f.origen === "stock").map(renglon).sort();
+        const aPedido = filas.filter((f) => f.origen === "proveedor").map(renglon).sort();
+
         avisarTelegram(
           `🧾 Pedido nuevo de ${quien}\n` +
-          `${filas.length} productos · ${unidades} unidades · US$ ${plata.toFixed(2)}\n\n` +
-          renglones + (nota ? `\n\nNota: ${nota}` : "")
+          `${filas.length} productos · ${unidades} unidades · US$ ${plata.toFixed(2)}\n` +
+          (hay.length ? `\nDE LO QUE HAY\n${hay.join("\n")}\n` : "") +
+          (aPedido.length ? `\nA PEDIDO\n${aPedido.join("\n")}\n` : "") +
+          (nota ? `\nNota: ${nota}` : "")
         );
 
         res.json({ ok: true, id: r.insertId, productos: filas.length, unidades,
@@ -220,7 +252,7 @@ router.get("/pedidos-lista", authenticate, async (req, res) => {
 
     if (pedidos.length) {
       const [items] = await pool.promise().query(
-        `SELECT pedido_id, sku, nombre, precio_usd, cantidad
+        `SELECT pedido_id, sku, origen, nombre, precio_usd, cantidad
            FROM pedidos_lista_items
           WHERE pedido_id IN (?)
           ORDER BY nombre`, [pedidos.map((p) => p.id)]);
@@ -319,6 +351,7 @@ router.get("/lista", publicCors, async (_req, res) => {
     const [[info]] = await pool.promise().query(
       "SELECT MAX(visto) AS actualizado FROM catalogo_proveedor WHERE presente = 1 AND hay = 1"
     );
+    const propio = await stockParaMayoristas();
 
     const esc = (t) => String(t).replace(/[&<>"]/g,
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -340,6 +373,30 @@ router.get("/lista", publicCors, async (_req, res) => {
         `<input type="number" min="0" max="999" value="" inputmode="numeric" placeholder="0">` +
         `<button class="mas" aria-label="Agregar uno">+</button>` +
       `</span></li>`;
+
+    // Lo que hay en Central, agrupado por modelo. Va con la cantidad a la
+    // vista: en esta sección el número importa, porque es lo que queda.
+    const porProducto = new Map();
+    for (const f of propio) {
+      if (!porProducto.has(f.producto)) porProducto.set(f.producto, []);
+      porProducto.get(f.producto).push(f);
+    }
+    const seccionStock = [...porProducto.entries()].map(([producto, gustos]) => {
+      const items = gustos.map((g) =>
+        `<li data-busca="${esc((producto + " " + g.gusto).toLowerCase())}">` +
+        `<span class="que">${esc(g.gusto)}<span class="quedan">${g.cantidad}</span></span>` +
+        `<span class="precio">US$ ${g.precio.toFixed(2).replace(".", ",")}</span>` +
+        `<span class="cont" data-sku="${esc(g.clave)}" data-precio="${g.precio}"` +
+        ` data-tope="${g.cantidad}">` +
+          `<button class="menos" aria-label="Quitar uno">−</button>` +
+          `<input type="number" min="0" max="${g.cantidad}" value="" inputmode="numeric" placeholder="0">` +
+          `<button class="mas" aria-label="Agregar uno">+</button>` +
+        `</span></li>`).join("");
+      return `<section data-busca="${esc((producto + " " +
+        gustos.map((g) => g.gusto).join(" ")).toLowerCase())}">
+        <h2>${esc(producto)} <span>${gustos.length}</span></h2>
+        <ul>${items}</ul></section>`;
+    }).join("");
 
     const porModelo = new Map();
     for (const f of filas) {
@@ -418,6 +475,15 @@ router.get("/lista", publicCors, async (_req, res) => {
                  border: 1px solid #243040; background: #121922; color: #8b98a5;
                  font-size: .9rem; font-family: inherit; }
   .modo button.activo { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
+  .modo button span { opacity: .65; font-size: .8rem; }
+  .submodo { max-width: 760px; margin: 0 auto 14px; display: flex; gap: 6px; }
+  .submodo button { flex: 1; padding: 6px; border-radius: 7px; cursor: pointer;
+                    border: 1px solid #1d2733; background: transparent; color: #64748b;
+                    font-size: .8rem; font-family: inherit; }
+  .submodo button.activo { color: #e6edf3; border-color: #334155; background: #121922; }
+  .quedan { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 20px;
+            background: #14532d; color: #86efac; font-size: .72rem; vertical-align: middle; }
+  .nada2 { color: #8b98a5; text-align: center; padding: 30px 0; }
   li.no { color: #64748b; text-decoration: line-through; }
   .nada { color: #8b98a5; text-align: center; padding: 30px 0; display: none; }
   footer { max-width: 760px; margin: 30px auto 110px; color: #64748b;
@@ -461,17 +527,27 @@ router.get("/lista", publicCors, async (_req, res) => {
 <body>
 <header>
   <h1>Lista de pedidos</h1>
-  <div class="sub">${filas.length} productos en ${porModelo.size} modelos ·
+  <div class="sub">${propio.length} para entrega inmediata · ${filas.length} a pedido ·
     actualizada el ${esc(cuando)}</div>
 </header>
 <input id="buscar" type="search" placeholder="Buscar modelo o gusto..." autocomplete="off">
 <div class="modo">
-  <button id="btnLista" class="activo">Todo en una lista</button>
-  <button id="btnModelos">Por modelo</button>
+  <button id="btnHay" class="activo">Hay ahora <span>${propio.length}</span></button>
+  <button id="btnPedido">A pedido <span>${filas.length}</span></button>
 </div>
+
 <main>
-  <ul id="corrida">${corrida}</ul>
-  <div id="agrupado" style="display:none">${secciones}</div>
+  <div id="hay">${seccionStock || '<p class="nada2">No hay stock cargado en Central.</p>'}</div>
+
+  <div id="pedido" style="display:none">
+    <div class="submodo">
+      <button id="btnLista" class="activo">Todo junto</button>
+      <button id="btnModelos">Por modelo</button>
+    </div>
+    <ul id="corrida">${corrida}</ul>
+    <div id="agrupado" style="display:none">${secciones}</div>
+  </div>
+
   <div class="nada">No encontré nada con eso.</div>
 </main>
 <footer>Precios en dólares, por unidad. Solo lo que hay.
@@ -503,18 +579,24 @@ Se actualiza sola varias veces por día.</footer>
 </dialog>
 <script>
   const campo = document.getElementById("buscar");
-  const bloques = [...document.querySelectorAll("section")];
   const sueltos = [...document.querySelectorAll("#corrida li")];
+  const bloques = [...document.querySelectorAll("#agrupado section")];
+  const bloquesHay = [...document.querySelectorAll("#hay section")];
   const corrida = document.getElementById("corrida");
   const agrupado = document.getElementById("agrupado");
   const nada = document.querySelector(".nada");
   const btnLista = document.getElementById("btnLista");
   const btnModelos = document.getElementById("btnModelos");
+  const btnHay = document.getElementById("btnHay");
+  const btnPedido = document.getElementById("btnPedido");
+  const panelHay = document.getElementById("hay");
+  const panelPedido = document.getElementById("pedido");
   let porModelo = false;
+  let enStock = true;
 
   function filtrar() {
     const q = campo.value.trim().toLowerCase();
-    const cuales = porModelo ? bloques : sueltos;
+    const cuales = enStock ? bloquesHay : (porModelo ? bloques : sueltos);
     let visibles = 0;
     for (const el of cuales) {
       const ok = !q || el.dataset.busca.includes(q);
@@ -533,9 +615,20 @@ Se actualiza sola varias veces por día.</footer>
     filtrar();
   }
 
+  function seccion(stock) {
+    enStock = stock;
+    panelHay.style.display = stock ? "block" : "none";
+    panelPedido.style.display = stock ? "none" : "block";
+    btnHay.classList.toggle("activo", stock);
+    btnPedido.classList.toggle("activo", !stock);
+    filtrar();
+  }
+
   campo.addEventListener("input", filtrar);
   btnLista.addEventListener("click", () => modo(false));
   btnModelos.addEventListener("click", () => modo(true));
+  btnHay.addEventListener("click", () => seccion(true));
+  btnPedido.addEventListener("click", () => seccion(false));
 
   // ── El pedido ──────────────────────────────────────────────────────────
   // Lo elegido vive en un solo lugar y los contadores son su reflejo. El mismo
@@ -597,8 +690,13 @@ Se actualiza sola varias veces por día.</footer>
       '<br><span class="plata">' + enPlata(cuanto()) + "</span>";
   }
 
+  // Lo que hay en Central es stock real: no se puede pedir más de lo que queda.
+  // El catálogo del proveedor no tiene tope porque no es stock nuestro.
+  const topes = {};
+  for (const c of conts) if (c.dataset.tope) topes[c.dataset.sku] = Number(c.dataset.tope);
+
   function poner(sku, n) {
-    n = Math.max(0, Math.min(999, Math.floor(n) || 0));
+    n = Math.max(0, Math.min(topes[sku] || 999, Math.floor(n) || 0));
     if (n) elegido[sku] = n; else delete elegido[sku];
     guardar();
     pintar();
