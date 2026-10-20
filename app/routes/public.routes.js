@@ -391,9 +391,9 @@ router.get("/lista", publicCors, async (_req, res) => {
        color: #7dd3fc; margin: 0 0 8px; border-bottom: 1px solid #1d2733;
        padding-bottom: 6px; }
   h2 span { color: #64748b; font-weight: 400; }
-  ul { list-style: none; margin: 0; padding: 0;
-       display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-       gap: 4px 14px; }
+  /* Una sola columna: el renglón ya no es un nombre suelto, lleva precio y
+     contador, y en dos columnas el nombre se parte letra por letra. */
+  ul { list-style: none; margin: 0; padding: 0; }
   li { padding: 5px 0; font-size: .95rem;
        display: flex; align-items: center; gap: 10px; justify-content: space-between; }
   .que { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -552,6 +552,19 @@ Se actualiza sola varias veces por día.</footer>
   // doble: cada producto tiene uno en "todo junto" y otro en "por modelo".
   const precios = {};
   for (const c of conts) precios[c.dataset.sku] = Number(c.dataset.precio || 0);
+
+  // Lo guardado puede tener productos que ya no están: el proveedor los agotó
+  // o los sacó desde la última vez que entró. Se limpian al abrir, porque si
+  // no siguen sumando unidades al total sin aparecer en ningún renglón, y se
+  // irían en el pedido sin que nadie los vea.
+  let sobraron = 0;
+  for (const sku of Object.keys(elegido)) {
+    if (!(sku in precios)) { delete elegido[sku]; sobraron++; }
+  }
+  if (sobraron) {
+    guardar();
+    console.log(sobraron + " producto(s) del pedido ya no están en la lista");
+  }
 
   const cuanto = () => Object.keys(elegido)
     .reduce((a, sku) => a + elegido[sku] * (precios[sku] || 0), 0);
