@@ -21,6 +21,16 @@ const { avisarTelegram } = require("./telegram");
 
 const API = "https://italiashop.com.py/wp-json/wc/store/v1/products";
 const CATEGORIA = "descartables";
+
+/**
+ * Cuánto se le suma al precio de la web del proveedor para armar el precio de
+ * la lista. Se cambia con MARGEN_USD sin tocar código.
+ *
+ * El precio de la web no es lo que paga Nahuel: le facturan entre 8% y 11% más
+ * barato. Así que sumarle dos deja algo más de dos de ganancia real, y nunca
+ * menos, que es el lado por el que conviene equivocarse.
+ */
+const MARGEN_USD = Number(process.env.MARGEN_USD || 2);
 const CADA_MS = 6 * 60 * 60 * 1000;
 
 /**
@@ -112,14 +122,23 @@ async function sincronizar() {
   for (const p of crudos) {
     const sku = String(p.sku || p.id);
     const { modelo, gusto } = partir(p.name);
+
+    // WooCommerce manda el precio en la unidad más chica de la moneda: "1100"
+    // con currency_minor_unit 2 son 11 dólares, no mil cien.
+    const escala = 10 ** Number(p.prices?.currency_minor_unit ?? 2);
+    const crudo = Number(p.prices?.price);
+    const precio = Number.isFinite(crudo) && crudo > 0
+      ? Number((crudo / escala).toFixed(2)) : null;
+
     const [r] = await pool.promise().query(
       `INSERT INTO catalogo_proveedor
-         (sku, nombre, modelo, gusto, hay, presente, visto)
-       VALUES (?, ?, ?, ?, ?, 1, NOW())
+         (sku, nombre, modelo, gusto, precio_usd, hay, presente, visto)
+       VALUES (?, ?, ?, ?, ?, ?, 1, NOW())
        ON DUPLICATE KEY UPDATE
          nombre = VALUES(nombre), modelo = VALUES(modelo), gusto = VALUES(gusto),
+         precio_usd = VALUES(precio_usd),
          hay = VALUES(hay), presente = 1, visto = NOW()`,
-      [sku, p.name, modelo, gusto, p.is_in_stock ? 1 : 0]
+      [sku, p.name, modelo, gusto, precio, p.is_in_stock ? 1 : 0]
     );
     if (r.affectedRows === 1) nuevos++;   // 1 es alta, 2 es actualización
     vistos.push(sku);
@@ -142,4 +161,4 @@ function arrancar() {
   setInterval(() => sincronizar().catch(() => {}), CADA_MS);
 }
 
-module.exports = { sincronizar, arrancar, partirNombres };
+module.exports = { sincronizar, arrancar, partirNombres, MARGEN_USD };

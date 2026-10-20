@@ -4,6 +4,7 @@ const cors = require("cors");
 const router = express.Router();
 const pool = require("../db");
 const { avisarTelegram } = require("../services/telegram");
+const { MARGEN_USD } = require("../services/catalogoProveedor");
 
 // CORS SOLO para endpoints públicos
 const publicCors = cors({ origin: "*", credentials: false });
@@ -141,9 +142,12 @@ router.post("/public/pedido-lista", publicCors, express.json({ limit: "256kb" })
     try {
       // El nombre sale del catálogo, no de lo que mande el navegador: así no se
       // puede pedir "100 unidades de <lo que a uno se le ocurra escribir>".
+      // El precio sale del catálogo, igual que el nombre: el navegador manda
+      // qué y cuánto, nunca a cuánto.
       const [filas] = await pool.promise().query(
-        "SELECT sku, nombre, modelo FROM catalogo_proveedor WHERE sku IN (?)",
-        [[...pedido.keys()]]
+        `SELECT sku, nombre, modelo, ROUND(precio_usd + ?, 2) AS precio
+           FROM catalogo_proveedor WHERE sku IN (?)`,
+        [MARGEN_USD, [...pedido.keys()]]
       );
       if (!filas.length) return res.status(400).json({ error: "No reconocí ningún producto" });
 
@@ -156,8 +160,9 @@ router.post("/public/pedido-lista", publicCors, express.json({ limit: "256kb" })
         );
         for (const f of filas) {
           await conn.query(
-            "INSERT INTO pedidos_lista_items (pedido_id, sku, nombre, cantidad) VALUES (?, ?, ?, ?)",
-            [r.insertId, f.sku, f.nombre, pedido.get(f.sku)]
+            `INSERT INTO pedidos_lista_items (pedido_id, sku, nombre, precio_usd, cantidad)
+             VALUES (?, ?, ?, ?, ?)`,
+            [r.insertId, f.sku, f.nombre, f.precio, pedido.get(f.sku)]
           );
         }
         await conn.commit();
@@ -165,17 +170,19 @@ router.post("/public/pedido-lista", publicCors, express.json({ limit: "256kb" })
         ultimoPedido.set(ip, ahora);
 
         const unidades = filas.reduce((a, f) => a + pedido.get(f.sku), 0);
+        const plata = filas.reduce((a, f) => a + pedido.get(f.sku) * Number(f.precio || 0), 0);
         const renglones = filas
-          .map((f) => `${pedido.get(f.sku)}x ${f.nombre}`)
+          .map((f) => `${pedido.get(f.sku)}x ${f.nombre} — US$ ${Number(f.precio).toFixed(2)}`)
           .sort()
           .join("\n");
         avisarTelegram(
           `🧾 Pedido nuevo de ${quien}\n` +
-          `${filas.length} productos · ${unidades} unidades\n\n${renglones}` +
-          (nota ? `\n\nNota: ${nota}` : "")
+          `${filas.length} productos · ${unidades} unidades · US$ ${plata.toFixed(2)}\n\n` +
+          renglones + (nota ? `\n\nNota: ${nota}` : "")
         );
 
-        res.json({ ok: true, id: r.insertId, productos: filas.length, unidades });
+        res.json({ ok: true, id: r.insertId, productos: filas.length, unidades,
+                   total_usd: Number(plata.toFixed(2)) });
       } catch (e) {
         await conn.rollback();
         throw e;
@@ -203,8 +210,10 @@ router.get("/public/lista-proveedor", publicCors, async (_req, res) => {
       // Solo lo que el proveedor tiene: una lista de pedidos con cosas que no
       // se pueden pedir hace perder el tiempo al que la lee y obliga a
       // contestar que no después.
-      `SELECT modelo, gusto, hay FROM catalogo_proveedor
-        WHERE presente = 1 AND hay = 1 ORDER BY modelo, gusto`
+      `SELECT modelo, gusto, hay, ROUND(precio_usd + ?, 2) AS precio
+         FROM catalogo_proveedor
+        WHERE presente = 1 AND hay = 1 AND precio_usd IS NOT NULL
+        ORDER BY modelo, gusto`, [MARGEN_USD]
     );
     const [[info]] = await pool.promise().query(
       "SELECT MAX(visto) AS actualizado FROM catalogo_proveedor WHERE presente = 1 AND hay = 1"
@@ -239,8 +248,11 @@ router.get("/lista", publicCors, async (_req, res) => {
   try {
     const [filas] = await pool.promise().query(
       // Solo lo que el proveedor tiene en stock
-      `SELECT sku, nombre, modelo, gusto, hay FROM catalogo_proveedor
-        WHERE presente = 1 AND hay = 1 ORDER BY modelo, gusto`
+      `SELECT sku, nombre, modelo, gusto, hay,
+              ROUND(precio_usd + ?, 2) AS precio
+         FROM catalogo_proveedor
+        WHERE presente = 1 AND hay = 1 AND precio_usd IS NOT NULL
+        ORDER BY modelo, gusto`, [MARGEN_USD]
     );
     const [[info]] = await pool.promise().query(
       "SELECT MAX(visto) AS actualizado FROM catalogo_proveedor WHERE presente = 1 AND hay = 1"
@@ -260,7 +272,8 @@ router.get("/lista", publicCors, async (_req, res) => {
       `<li class="${f.hay ? "" : "no"}"${
         conBusca ? ` data-busca="${esc(f.nombre.toLowerCase())}"` : ""}>` +
       `<span class="que">${esc(texto)}</span>` +
-      `<span class="cont" data-sku="${esc(f.sku)}">` +
+      `<span class="precio">US$ ${Number(f.precio).toFixed(2).replace(".", ",")}</span>` +
+      `<span class="cont" data-sku="${esc(f.sku)}" data-precio="${Number(f.precio)}">` +
         `<button class="menos" aria-label="Quitar uno">−</button>` +
         `<input type="number" min="0" max="999" value="" inputmode="numeric" placeholder="0">` +
         `<button class="mas" aria-label="Agregar uno">+</button>` +
@@ -321,7 +334,9 @@ router.get("/lista", publicCors, async (_req, res) => {
        gap: 4px 14px; }
   li { padding: 5px 0; font-size: .95rem;
        display: flex; align-items: center; gap: 10px; justify-content: space-between; }
-  .que { flex: 1; min-width: 0; }
+  .que { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .precio { flex: none; font-size: .9rem; color: #7dd3fc; font-variant-numeric: tabular-nums;
+            min-width: 66px; text-align: right; }
   .cont { display: flex; align-items: center; gap: 2px; flex: none; }
   .cont button { width: 30px; height: 30px; border-radius: 7px; cursor: pointer;
                  border: 1px solid #243040; background: #121922; color: #9fb3c8;
@@ -354,6 +369,7 @@ router.get("/lista", publicCors, async (_req, res) => {
                     align-items: center; gap: 12px; }
   #resumen { flex: 1; font-size: .88rem; color: #cbd5e1; }
   #resumen b { color: #fff; }
+  .plata { color: #7dd3fc; font-weight: 700; font-size: 1.05rem; }
   #enviar { padding: 11px 20px; border: none; border-radius: 9px; cursor: pointer;
             background: #1d4ed8; color: #fff; font-size: .95rem; font-weight: 600;
             font-family: inherit; }
@@ -396,12 +412,13 @@ router.get("/lista", publicCors, async (_req, res) => {
   <div id="agrupado" style="display:none">${secciones}</div>
   <div class="nada">No encontré nada con eso.</div>
 </main>
-<footer>Solo lo que hay. Se actualiza sola varias veces por día.</footer>
+<footer>Precios en dólares, por unidad. Solo lo que hay.
+Se actualiza sola varias veces por día.</footer>
 
 <div id="listo">
   <div class="tilde">✓</div>
   <h2>Pedido mandado</h2>
-  <p>Te vamos a pasar los precios por WhatsApp.</p>
+  <p>Te escribimos por WhatsApp para coordinar.</p>
 </div>
 
 <div id="barra"><div class="adentro">
@@ -468,6 +485,15 @@ router.get("/lista", publicCors, async (_req, res) => {
   try { elegido = JSON.parse(localStorage.getItem(CLAVE) || "{}"); } catch (e) {}
 
   const conts = [...document.querySelectorAll(".cont")];
+
+  // Precio por SKU, una sola vez. Sumar recorriendo los contadores contaba
+  // doble: cada producto tiene uno en "todo junto" y otro en "por modelo".
+  const precios = {};
+  for (const c of conts) precios[c.dataset.sku] = Number(c.dataset.precio || 0);
+
+  const cuanto = () => Object.keys(elegido)
+    .reduce((a, sku) => a + elegido[sku] * (precios[sku] || 0), 0);
+  const enPlata = (n) => "US$ " + n.toFixed(2).replace(".", ",");
   const barra = document.getElementById("barra");
   const resumen = document.getElementById("resumen");
   const dialogo = document.getElementById("dialogo");
@@ -492,7 +518,8 @@ router.get("/lista", publicCors, async (_req, res) => {
     // los $ con llave los interpolaría Node antes de que llegue al navegador.
     resumen.innerHTML = "<b>" + skus.length + "</b> producto" +
       (skus.length === 1 ? "" : "s") + " · <b>" + unidades + "</b> unidad" +
-      (unidades === 1 ? "" : "es");
+      (unidades === 1 ? "" : "es") +
+      '<br><span class="plata">' + enPlata(cuanto()) + "</span>";
   }
 
   function poner(sku, n) {
@@ -524,7 +551,7 @@ router.get("/lista", publicCors, async (_req, res) => {
     const unidades = skus.reduce((a, k) => a + elegido[k], 0);
     queVa.textContent = skus.length + " producto" + (skus.length === 1 ? "" : "s") +
       ", " + unidades + " unidad" + (unidades === 1 ? "" : "es") +
-      ". Los precios te los pasamos después.";
+      ", " + enPlata(cuanto()) + ".";
     document.getElementById("quien").value = localStorage.getItem("quien-north") || "";
     dialogo.showModal();
   });
