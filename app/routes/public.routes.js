@@ -3,6 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const router = express.Router();
 const pool = require("../db");
+const { avisarTelegram } = require("../services/telegram");
 
 // CORS SOLO para endpoints públicos
 const publicCors = cors({ origin: "*", credentials: false });
@@ -93,6 +94,101 @@ function toNullOrTrim(v) {
  * Lista pública de sucursales. Muestra el apodo si existe.
  * Devuelve: [{ id, nombre, nombre_real, apodo }]
  */
+// Pedidos que llegan de /lista. Es un endpoint abierto —los mayoristas no
+// tienen usuario— así que hay que cuidarlo a mano: un pedido por IP cada medio
+// minuto, un tope de renglones y de unidades, y los SKU se validan contra el
+// catálogo en vez de confiar en lo que llega.
+const ultimoPedido = new Map();
+const ESPERA_MS = 30 * 1000;
+const MAX_RENGLONES = 200;
+const MAX_POR_RENGLON = 999;
+
+/**
+ * POST /public/pedido-lista
+ * Body: { quien, nota, items: [{ sku, cantidad }] }
+ *
+ * No lleva precios: el mayorista dice qué quiere y cuánto, y el precio se lo
+ * pone Nahuel después al armar el pedido mayorista de verdad.
+ */
+router.post("/public/pedido-lista", publicCors, express.json({ limit: "256kb" }),
+  async (req, res) => {
+    const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
+    const ahora = Date.now();
+    if (ahora - (ultimoPedido.get(ip) || 0) < ESPERA_MS) {
+      return res.status(429).json({ error: "Esperá un momento antes de mandar otro pedido" });
+    }
+
+    const quien = String(req.body?.quien || "").trim().slice(0, 120);
+    const nota = String(req.body?.nota || "").trim().slice(0, 500) || null;
+    const crudos = Array.isArray(req.body?.items) ? req.body.items : [];
+
+    if (!quien) return res.status(400).json({ error: "Falta tu nombre" });
+    if (!crudos.length) return res.status(400).json({ error: "El pedido está vacío" });
+    if (crudos.length > MAX_RENGLONES) {
+      return res.status(400).json({ error: "Demasiados productos en un mismo pedido" });
+    }
+
+    // Se juntan por SKU por si el mismo producto viene dos veces
+    const pedido = new Map();
+    for (const it of crudos) {
+      const sku = String(it?.sku || "").trim().slice(0, 64);
+      const cantidad = Math.floor(Number(it?.cantidad));
+      if (!sku || !(cantidad > 0)) continue;
+      pedido.set(sku, Math.min((pedido.get(sku) || 0) + cantidad, MAX_POR_RENGLON));
+    }
+    if (!pedido.size) return res.status(400).json({ error: "El pedido está vacío" });
+
+    try {
+      // El nombre sale del catálogo, no de lo que mande el navegador: así no se
+      // puede pedir "100 unidades de <lo que a uno se le ocurra escribir>".
+      const [filas] = await pool.promise().query(
+        "SELECT sku, nombre, modelo FROM catalogo_proveedor WHERE sku IN (?)",
+        [[...pedido.keys()]]
+      );
+      if (!filas.length) return res.status(400).json({ error: "No reconocí ningún producto" });
+
+      const conn = await pool.promise().getConnection();
+      try {
+        await conn.beginTransaction();
+        const [r] = await conn.query(
+          "INSERT INTO pedidos_lista (quien, nota, fecha) VALUES (?, ?, NOW())",
+          [quien, nota]
+        );
+        for (const f of filas) {
+          await conn.query(
+            "INSERT INTO pedidos_lista_items (pedido_id, sku, nombre, cantidad) VALUES (?, ?, ?, ?)",
+            [r.insertId, f.sku, f.nombre, pedido.get(f.sku)]
+          );
+        }
+        await conn.commit();
+
+        ultimoPedido.set(ip, ahora);
+
+        const unidades = filas.reduce((a, f) => a + pedido.get(f.sku), 0);
+        const renglones = filas
+          .map((f) => `${pedido.get(f.sku)}x ${f.nombre}`)
+          .sort()
+          .join("\n");
+        avisarTelegram(
+          `🧾 Pedido nuevo de ${quien}\n` +
+          `${filas.length} productos · ${unidades} unidades\n\n${renglones}` +
+          (nota ? `\n\nNota: ${nota}` : "")
+        );
+
+        res.json({ ok: true, id: r.insertId, productos: filas.length, unidades });
+      } catch (e) {
+        await conn.rollback();
+        throw e;
+      } finally {
+        conn.release();
+      }
+    } catch (e) {
+      console.error("❌ POST /public/pedido-lista:", e);
+      res.status(500).json({ error: "No pude guardar el pedido" });
+    }
+  }
+);
+
 /**
  * GET /public/lista-proveedor
  * Qué modelos y gustos tiene el proveedor, agrupado y sin un solo precio.
@@ -139,7 +235,7 @@ router.get("/public/lista-proveedor", publicCors, async (_req, res) => {
 router.get("/lista", publicCors, async (_req, res) => {
   try {
     const [filas] = await pool.promise().query(
-      `SELECT nombre, modelo, gusto, hay FROM catalogo_proveedor
+      `SELECT sku, nombre, modelo, gusto, hay FROM catalogo_proveedor
         WHERE presente = 1 ORDER BY modelo, gusto`
     );
     const [[info]] = await pool.promise().query(
@@ -148,6 +244,23 @@ router.get("/lista", publicCors, async (_req, res) => {
 
     const esc = (t) => String(t).replace(/[&<>"]/g,
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+    /**
+     * Un renglón con su contador.
+     *
+     * El contador va en los dos modos de la lista y el mismo producto aparece
+     * en ambos, así que cada uno lleva su SKU: lo que se escribe en uno se
+     * refleja en el otro sin tener que redibujar nada.
+     */
+    const fila = (f, texto, conBusca) =>
+      `<li class="${f.hay ? "" : "no"}"${
+        conBusca ? ` data-busca="${esc(f.nombre.toLowerCase())}"` : ""}>` +
+      `<span class="que">${esc(texto)}</span>` +
+      `<span class="cont" data-sku="${esc(f.sku)}">` +
+        `<button class="menos" aria-label="Quitar uno">−</button>` +
+        `<input type="number" min="0" max="999" value="" inputmode="numeric" placeholder="0">` +
+        `<button class="mas" aria-label="Agregar uno">+</button>` +
+      `</span></li>`;
 
     const porModelo = new Map();
     for (const f of filas) {
@@ -161,8 +274,7 @@ router.get("/lista", publicCors, async (_req, res) => {
       : "nunca";
 
     const secciones = [...porModelo.entries()].map(([modelo, gustos]) => {
-      const items = gustos.map((g) =>
-        `<li class="${g.hay ? "" : "no"}">${esc(g.gusto || "—")}</li>`).join("");
+      const items = gustos.map((g) => fila(g, g.gusto || "—")).join("");
       return `<section data-busca="${esc((modelo + " " +
         gustos.map((g) => g.gusto).join(" ")).toLowerCase())}">
         <h2>${esc(modelo)} <span>${gustos.length}</span></h2>
@@ -174,8 +286,7 @@ router.get("/lista", publicCors, async (_req, res) => {
     // pedir, y así no hay que elegir una por todos.
     const corrida = [...filas]
       .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"))
-      .map((f) => `<li class="${f.hay ? "" : "no"}"
-        data-busca="${esc(f.nombre.toLowerCase())}">${esc(f.nombre)}</li>`)
+      .map((f) => fila(f, f.nombre, true))
       .join("");
 
     res.set("Content-Type", "text/html; charset=utf-8");
@@ -204,7 +315,21 @@ router.get("/lista", publicCors, async (_req, res) => {
   ul { list-style: none; margin: 0; padding: 0;
        display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
        gap: 4px 14px; }
-  li { padding: 3px 0; font-size: .95rem; }
+  li { padding: 5px 0; font-size: .95rem;
+       display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+  .que { flex: 1; min-width: 0; }
+  .cont { display: flex; align-items: center; gap: 2px; flex: none; }
+  .cont button { width: 30px; height: 30px; border-radius: 7px; cursor: pointer;
+                 border: 1px solid #243040; background: #121922; color: #9fb3c8;
+                 font-size: 1.05rem; line-height: 1; padding: 0; font-family: inherit; }
+  .cont button:active { background: #1d4ed8; color: #fff; }
+  .cont input { width: 44px; height: 30px; text-align: center; border-radius: 7px;
+                border: 1px solid #243040; background: #0e141c; color: #e6edf3;
+                font-size: .9rem; font-family: inherit; -moz-appearance: textfield; }
+  .cont input::-webkit-outer-spin-button,
+  .cont input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  li.elegido { background: #0f1b2d; border-radius: 8px; padding-left: 8px; padding-right: 4px; }
+  li.elegido .cont input { border-color: #1d4ed8; color: #fff; font-weight: 600; }
   #corrida { list-style: none; margin: 0; padding: 0; display: block; }
   #corrida li { border-bottom: 1px solid #141c26; padding: 7px 0; }
   .modo { max-width: 760px; margin: 0 auto 16px; display: flex; gap: 8px; }
@@ -214,8 +339,42 @@ router.get("/lista", publicCors, async (_req, res) => {
   .modo button.activo { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
   li.no { color: #64748b; text-decoration: line-through; }
   .nada { color: #8b98a5; text-align: center; padding: 30px 0; display: none; }
-  footer { max-width: 760px; margin: 30px auto 0; color: #64748b;
+  footer { max-width: 760px; margin: 30px auto 110px; color: #64748b;
            font-size: .8rem; text-align: center; }
+  #barra { position: fixed; left: 0; right: 0; bottom: 0; background: #0d141dee;
+           backdrop-filter: blur(8px); border-top: 1px solid #1d2733;
+           padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+           display: none; }
+  #barra.hay { display: block; }
+  #barra .adentro { max-width: 760px; margin: 0 auto; display: flex;
+                    align-items: center; gap: 12px; }
+  #resumen { flex: 1; font-size: .88rem; color: #cbd5e1; }
+  #resumen b { color: #fff; }
+  #enviar { padding: 11px 20px; border: none; border-radius: 9px; cursor: pointer;
+            background: #1d4ed8; color: #fff; font-size: .95rem; font-weight: 600;
+            font-family: inherit; }
+  #vaciar { background: none; border: none; color: #64748b; cursor: pointer;
+            font-size: .82rem; font-family: inherit; text-decoration: underline; }
+  dialog { border: 1px solid #243040; border-radius: 14px; background: #0f1620;
+           color: #e6edf3; padding: 20px; width: min(420px, calc(100vw - 32px)); }
+  dialog::backdrop { background: #000a; }
+  dialog h3 { margin: 0 0 4px; font-size: 1.05rem; }
+  dialog p { margin: 0 0 16px; color: #8b98a5; font-size: .85rem; }
+  dialog label { display: block; font-size: .82rem; color: #9fb3c8; margin-bottom: 5px; }
+  dialog input, dialog textarea { width: 100%; padding: 10px 12px; margin-bottom: 14px;
+           border-radius: 9px; border: 1px solid #243040; background: #121922;
+           color: #e6edf3; font-size: .95rem; font-family: inherit; }
+  dialog textarea { resize: vertical; min-height: 60px; }
+  .acciones { display: flex; gap: 8px; justify-content: flex-end; }
+  .acciones button { padding: 10px 18px; border-radius: 9px; cursor: pointer;
+           font-size: .9rem; font-family: inherit; border: 1px solid #243040;
+           background: #121922; color: #9fb3c8; }
+  .acciones button.ok { background: #1d4ed8; border-color: #1d4ed8;
+           color: #fff; font-weight: 600; }
+  .acciones button[disabled] { opacity: .5; cursor: default; }
+  #listo { text-align: center; padding: 40px 0; display: none; }
+  #listo .tilde { font-size: 2.6rem; }
+  #listo h2 { border: none; color: #4ade80; font-size: 1.1rem; }
 </style></head>
 <body>
 <header>
@@ -234,6 +393,31 @@ router.get("/lista", publicCors, async (_req, res) => {
   <div class="nada">No encontré nada con eso.</div>
 </main>
 <footer>Tachado = sin stock. Se actualiza sola varias veces por día.</footer>
+
+<div id="listo">
+  <div class="tilde">✓</div>
+  <h2>Pedido mandado</h2>
+  <p>Te vamos a pasar los precios por WhatsApp.</p>
+</div>
+
+<div id="barra"><div class="adentro">
+  <span id="resumen"></span>
+  <button id="vaciar">Vaciar</button>
+  <button id="enviar">Enviar pedido</button>
+</div></div>
+
+<dialog id="dialogo">
+  <h3>Mandar el pedido</h3>
+  <p id="queVa"></p>
+  <label for="quien">¿Quién pide?</label>
+  <input id="quien" maxlength="120" placeholder="Tu nombre o el del negocio" autocomplete="name">
+  <label for="nota">Algo para aclarar (opcional)</label>
+  <textarea id="nota" maxlength="500" placeholder="Cuándo lo necesitás, cómo lo retirás..."></textarea>
+  <div class="acciones">
+    <button id="cancelar">Cancelar</button>
+    <button id="confirmar" class="ok">Mandar</button>
+  </div>
+</dialog>
 <script>
   const campo = document.getElementById("buscar");
   const bloques = [...document.querySelectorAll("section")];
@@ -269,6 +453,119 @@ router.get("/lista", publicCors, async (_req, res) => {
   campo.addEventListener("input", filtrar);
   btnLista.addEventListener("click", () => modo(false));
   btnModelos.addEventListener("click", () => modo(true));
+
+  // ── El pedido ──────────────────────────────────────────────────────────
+  // Lo elegido vive en un solo lugar y los contadores son su reflejo. El mismo
+  // producto aparece en los dos modos de la lista, así que si cada input
+  // guardara su propio número, pasar de "todo junto" a "por modelo" mostraría
+  // cantidades distintas para la misma cosa.
+  const CLAVE = "pedido-north";
+  let elegido = {};
+  try { elegido = JSON.parse(localStorage.getItem(CLAVE) || "{}"); } catch (e) {}
+
+  const conts = [...document.querySelectorAll(".cont")];
+  const barra = document.getElementById("barra");
+  const resumen = document.getElementById("resumen");
+  const dialogo = document.getElementById("dialogo");
+  const queVa = document.getElementById("queVa");
+  const confirmar = document.getElementById("confirmar");
+
+  function guardar() {
+    try { localStorage.setItem(CLAVE, JSON.stringify(elegido)); } catch (e) {}
+  }
+
+  function pintar() {
+    for (const c of conts) {
+      const n = elegido[c.dataset.sku] || 0;
+      const input = c.querySelector("input");
+      if (document.activeElement !== input) input.value = n || "";
+      c.closest("li").classList.toggle("elegido", n > 0);
+    }
+    const skus = Object.keys(elegido);
+    const unidades = skus.reduce((a, k) => a + elegido[k], 0);
+    barra.classList.toggle("hay", skus.length > 0);
+    // Sin template literals: este script viaja adentro de uno del servidor, y
+    // los $ con llave los interpolaría Node antes de que llegue al navegador.
+    resumen.innerHTML = "<b>" + skus.length + "</b> producto" +
+      (skus.length === 1 ? "" : "s") + " · <b>" + unidades + "</b> unidad" +
+      (unidades === 1 ? "" : "es");
+  }
+
+  function poner(sku, n) {
+    n = Math.max(0, Math.min(999, Math.floor(n) || 0));
+    if (n) elegido[sku] = n; else delete elegido[sku];
+    guardar();
+    pintar();
+  }
+
+  for (const c of conts) {
+    const sku = c.dataset.sku;
+    c.querySelector(".menos").addEventListener("click",
+      () => poner(sku, (elegido[sku] || 0) - 1));
+    c.querySelector(".mas").addEventListener("click",
+      () => poner(sku, (elegido[sku] || 0) + 1));
+    c.querySelector("input").addEventListener("input",
+      (e) => poner(sku, Number(e.target.value)));
+  }
+
+  document.getElementById("vaciar").addEventListener("click", () => {
+    if (!confirm("¿Borrar todo el pedido?")) return;
+    elegido = {};
+    guardar();
+    pintar();
+  });
+
+  document.getElementById("enviar").addEventListener("click", () => {
+    const skus = Object.keys(elegido);
+    const unidades = skus.reduce((a, k) => a + elegido[k], 0);
+    queVa.textContent = skus.length + " producto" + (skus.length === 1 ? "" : "s") +
+      ", " + unidades + " unidad" + (unidades === 1 ? "" : "es") +
+      ". Los precios te los pasamos después.";
+    document.getElementById("quien").value = localStorage.getItem("quien-north") || "";
+    dialogo.showModal();
+  });
+
+  document.getElementById("cancelar").addEventListener("click", () => dialogo.close());
+
+  confirmar.addEventListener("click", async () => {
+    const quien = document.getElementById("quien").value.trim();
+    if (!quien) { document.getElementById("quien").focus(); return; }
+
+    confirmar.disabled = true;
+    confirmar.textContent = "Mandando...";
+    try {
+      const r = await fetch("/public/pedido-lista", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          quien,
+          nota: document.getElementById("nota").value.trim(),
+          items: Object.keys(elegido).map((sku) => ({ sku, cantidad: elegido[sku] })),
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "No se pudo mandar");
+
+      // Recién acá se borra: si falló, el pedido sigue entero y se puede
+      // reintentar sin volver a marcar ochenta productos.
+      localStorage.setItem("quien-north", quien);
+      elegido = {};
+      guardar();
+      dialogo.close();
+      document.querySelector("main").style.display = "none";
+      document.querySelector(".modo").style.display = "none";
+      campo.style.display = "none";
+      barra.classList.remove("hay");
+      document.getElementById("listo").style.display = "block";
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      confirmar.disabled = false;
+      confirmar.textContent = "Mandar";
+    }
+  });
+
+  pintar();
 </script>
 </body></html>`);
   } catch (e) {
