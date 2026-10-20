@@ -200,11 +200,14 @@ router.post("/public/pedido-lista", publicCors, express.json({ limit: "256kb" })
 router.get("/public/lista-proveedor", publicCors, async (_req, res) => {
   try {
     const [filas] = await pool.promise().query(
+      // Solo lo que el proveedor tiene: una lista de pedidos con cosas que no
+      // se pueden pedir hace perder el tiempo al que la lee y obliga a
+      // contestar que no después.
       `SELECT modelo, gusto, hay FROM catalogo_proveedor
-        WHERE presente = 1 ORDER BY modelo, gusto`
+        WHERE presente = 1 AND hay = 1 ORDER BY modelo, gusto`
     );
     const [[info]] = await pool.promise().query(
-      "SELECT MAX(visto) AS actualizado FROM catalogo_proveedor WHERE presente = 1"
+      "SELECT MAX(visto) AS actualizado FROM catalogo_proveedor WHERE presente = 1 AND hay = 1"
     );
 
     const modelos = [];
@@ -235,11 +238,12 @@ router.get("/public/lista-proveedor", publicCors, async (_req, res) => {
 router.get("/lista", publicCors, async (_req, res) => {
   try {
     const [filas] = await pool.promise().query(
+      // Solo lo que el proveedor tiene en stock
       `SELECT sku, nombre, modelo, gusto, hay FROM catalogo_proveedor
-        WHERE presente = 1 ORDER BY modelo, gusto`
+        WHERE presente = 1 AND hay = 1 ORDER BY modelo, gusto`
     );
     const [[info]] = await pool.promise().query(
-      "SELECT MAX(visto) AS actualizado FROM catalogo_proveedor WHERE presente = 1"
+      "SELECT MAX(visto) AS actualizado FROM catalogo_proveedor WHERE presente = 1 AND hay = 1"
     );
 
     const esc = (t) => String(t).replace(/[&<>"]/g,
@@ -392,7 +396,7 @@ router.get("/lista", publicCors, async (_req, res) => {
   <div id="agrupado" style="display:none">${secciones}</div>
   <div class="nada">No encontré nada con eso.</div>
 </main>
-<footer>Tachado = sin stock. Se actualiza sola varias veces por día.</footer>
+<footer>Solo lo que hay. Se actualiza sola varias veces por día.</footer>
 
 <div id="listo">
   <div class="tilde">✓</div>
