@@ -3,6 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const router = express.Router();
 const pool = require("../db");
+const authenticate = require("../middlewares/authenticate");
 const { avisarTelegram } = require("../services/telegram");
 const { MARGEN_USD } = require("../services/catalogoProveedor");
 
@@ -195,6 +196,67 @@ router.post("/public/pedido-lista", publicCors, express.json({ limit: "256kb" })
     }
   }
 );
+
+/**
+ * GET /pedidos-lista — lo que pidieron los mayoristas desde /lista.
+ *
+ * Esto sí es privado: lleva los precios con los que se cotizó y quién pidió.
+ */
+router.get("/pedidos-lista", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
+
+  const limite = Math.min(100, Math.max(1, parseInt(req.query.limit) || 30));
+  try {
+    const [pedidos] = await pool.promise().query(
+      `SELECT p.id, p.quien, p.nota, p.estado, p.fecha,
+              COUNT(i.id) AS productos,
+              COALESCE(SUM(i.cantidad), 0) AS unidades,
+              ROUND(COALESCE(SUM(i.cantidad * i.precio_usd), 0), 2) AS total_usd
+         FROM pedidos_lista p
+         LEFT JOIN pedidos_lista_items i ON i.pedido_id = p.id
+        GROUP BY p.id
+        ORDER BY p.id DESC
+        LIMIT ?`, [limite]);
+
+    if (pedidos.length) {
+      const [items] = await pool.promise().query(
+        `SELECT pedido_id, sku, nombre, precio_usd, cantidad
+           FROM pedidos_lista_items
+          WHERE pedido_id IN (?)
+          ORDER BY nombre`, [pedidos.map((p) => p.id)]);
+      const porPedido = new Map();
+      for (const it of items) {
+        if (!porPedido.has(it.pedido_id)) porPedido.set(it.pedido_id, []);
+        porPedido.get(it.pedido_id).push(it);
+      }
+      for (const p of pedidos) p.items = porPedido.get(p.id) || [];
+    }
+
+    res.json(pedidos);
+  } catch (e) {
+    console.error("❌ GET /pedidos-lista:", e);
+    res.status(500).json({ error: "Error al listar pedidos" });
+  }
+});
+
+/** PUT /pedidos-lista/:id — mover el estado (visto, cotizado, cerrado). */
+router.put("/pedidos-lista/:id", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
+
+  const estados = ["nuevo", "visto", "cotizado", "cerrado"];
+  const estado = String(req.body?.estado || "");
+  if (!estados.includes(estado)) return res.status(400).json({ error: "Estado inválido" });
+
+  try {
+    const [r] = await pool.promise().query(
+      "UPDATE pedidos_lista SET estado = ? WHERE id = ?", [estado, req.params.id]);
+    if (!r.affectedRows) return res.status(404).json({ error: "No existe ese pedido" });
+    res.json({ ok: true, estado });
+  } catch (e) {
+    console.error("❌ PUT /pedidos-lista:", e);
+    res.status(500).json({ error: "No pude cambiar el estado" });
+  }
+});
 
 /**
  * GET /public/lista-proveedor
