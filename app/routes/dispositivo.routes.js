@@ -49,11 +49,43 @@ router.get("/dispositivo/panel", async (req, res) => {
         WHERE estado = 'confirmado' AND DATE(fecha_confirmacion) = CURDATE()`
     );
 
+    // La última venta, para que el aparato la cante en voz alta cuando entra
+    // una nueva. Va armada acá y no en la placa: decir "diecinueve mil" en
+    // castellano a partir del número es trabajo, y del lado del servidor ya
+    // está hecho.
+    const [[ult]] = await pool.promise().query(
+      `SELECT v.id, v.cantidad, v.precio_unitario, s.nombre AS sucursal,
+              p.nombre AS producto, g.nombre AS gusto
+         FROM ventas v
+         LEFT JOIN sucursales s ON s.id = v.sucursal_id
+         LEFT JOIN gustos g ON g.id = v.gusto_id
+         LEFT JOIN productos p ON p.id = g.producto_id
+        WHERE DATE(v.fecha) = CURDATE()
+        ORDER BY v.id DESC LIMIT 1`
+    );
+
+    let venta = null;
+    if (ult) {
+      const plata = Math.round(Number(ult.precio_unitario) * ult.cantidad);
+      const donde = ult.sucursal ? ` en ${ult.sucursal}` : "";
+      const que = ult.producto
+        ? ` de ${ult.producto.split(" - ")[0]}${ult.gusto ? " " + ult.gusto : ""}`
+        : "";
+      venta = {
+        id: ult.id,
+        texto: ult.cantidad > 1
+          ? `Entraron ${ult.cantidad} unidades${que}${donde}, ${plata} pesos.`
+          : `Entró una venta${que}${donde}, ${plata} pesos.`,
+      };
+    }
+
     res.json({
       dolar: dolar ? Math.round(dolar) : null,
       fuente,
       ventas_hoy: Math.round(Number(hoy.total) + Number(may.total)),
       unidades_hoy: Number(hoy.unidades),
+      venta_id: venta ? venta.id : 0,
+      venta_texto: venta ? venta.texto : "",
       hora: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }),
     });
   } catch (e) {
