@@ -20,21 +20,15 @@ const TIMEOUT_MS = 20000;
 
 // Cómo tiene que sonar. Es un aparato que vive en el mostrador y le contesta al
 // dueño todo el día: tiene que sonar a alguien conocido, no a contestador.
-// Pedir "acento porteño" a secas no alcanza: el modelo lo entiende como una
-// sugerencia y tira a español neutro de doblaje. Lo que funciona es describirle
-// cómo suena, rasgo por rasgo, como se lo explicarías a un actor.
+// Español neutro, a pedido de Nahuel: el intento de acento argentino le salía
+// a medias al modelo y sonaba raro, y el neutro es lo que mejor le sale.
 const TONO =
-  "Sos de Buenos Aires, Argentina, y hablás con acento " +
-  "rioplatense bien marcado, el de todos los días, no el de la tele. " +
-  "Rasgos que tienen que notarse: la 'll' y la 'y' suenan como 'sh' " +
-  "(decís 'sho' por 'yo', 'cashe' por 'calle', 'shamame' por 'llamame'). " +
-  "La 's' antes de consonante se aspira o casi desaparece ('ehtá', 'mihmo'). " +
-  "La entonación es la italiana del Río de la Plata: sube y baja con ganas, " +
-  "alarga un poco la sílaba acentuada al final de la frase. Usás voseo " +
-  "('tenés', 'querés', 'avisame'). Nada de español neutro, nada de acento " +
-  "mexicano ni de doblaje, nada de locutor. Sos Vapi, el asistente del " +
-  "negocio, y le hablás a Nahue, el dueño: cálido, relajado, con buena onda, " +
-  "como un amigo que le da una mano.";
+  "Hablás en español latinoamericano neutro, sin acento de ningún país en " +
+  "particular: ni argentino, ni mexicano, ni español de España. Pronunciación " +
+  "clara y natural, como alguien que habla tranquilo con un conocido. Sos " +
+  "Vapi, el asistente del negocio, y le hablás al dueño. Tono cálido y amable, " +
+  "nada de locutor ni de voz institucional. Si es una confirmación, decila " +
+  "con ganas; si son números, decilos tranquilo y claro.";
 
 /** Las voces que ofrece OpenAI, para poder probarlas desde el bot. */
 const VOCES = ["alloy", "ash", "ballad", "coral", "echo", "fable",

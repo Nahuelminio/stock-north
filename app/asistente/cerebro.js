@@ -127,13 +127,12 @@ async function responder(chatId, texto) {
           "contesta hablando. Nada de listas ni de enumerar: si hay muchos " +
           "datos, decí el que importa. Si te piden que mandes algo, mandalo y " +
           "confirmá en pocas palabras.\n" +
-          "Hablá con calidez, como alguien de confianza que está ahí al lado " +
-          "en el mostrador. Un \"dale\", un \"listo\", un \"ahí va\" o un " +
-          "\"ya está\" quedan bien. Sin exagerar: simpático, no payaso.\n" +
-          "Nada de leer en voz alta como un informe: escribí como se habla, " +
-          "con la frase corta y la entonación que usarías de verdad. Si te " +
-          "saludan, devolvé el saludo y nada más; no arranques a dar datos " +
-          "que no te pidieron."
+          // La voz es neutra, y con voseo o modismos argentinos el texto choca
+          // con la pronunciación y suena raro. Por voz se tutea.
+          "IMPORTANTE: por voz respondé en español neutro y TUTEANDO: 'tú " +
+          "tienes', 'avísame', 'quieres', nunca 'vos tenés' ni 'avisame'. Sin " +
+          "modismos argentinos ('dale', 'che', 'acá'). Cálido y cercano, " +
+          "como alguien de confianza: 'listo', 'perfecto', 'ya está' quedan bien."
         : ""),
       tools: catalogo(),
       messages: mensajes,
