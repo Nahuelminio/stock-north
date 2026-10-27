@@ -70,6 +70,32 @@ router.get("/usuarios", authenticate, async (req, res) => {
   }
 });
 
+// ✅ Cambiar la contraseña de un usuario — solo admin
+//
+// Sin esto, si una sucursal se olvidaba la clave no había forma de arreglarlo
+// desde la pantalla: el usuario no se podía borrar ni volver a crear, porque
+// el email ya existía.
+router.patch("/usuarios/:id/password", authenticate, async (req, res) => {
+  if (req.user?.rol !== "admin") {
+    return res.status(403).json({ error: "Acceso denegado: solo administradores" });
+  }
+  const password = String(req.body?.password || "");
+  if (password.length < 6) {
+    return res.status(400).json({ error: "La contraseña tiene que tener al menos 6 caracteres" });
+  }
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const [r] = await pool
+      .promise()
+      .query("UPDATE usuarios SET password_hash = ? WHERE id = ?", [hash, req.params.id]);
+    if (!r.affectedRows) return res.status(404).json({ error: "No existe ese usuario" });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error("❌ Error en PATCH /auth/usuarios/:id/password:", error);
+    res.status(500).json({ error: "No se pudo cambiar la contraseña" });
+  }
+});
+
 // ✅ Login de usuario
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
