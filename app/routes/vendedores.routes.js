@@ -43,7 +43,8 @@ const preciosVendedor = require("../services/preciosVendedor");
  * GET /vendedores/precios
  * Los modelos que hay en la sucursal de los vendedores (Central), con su precio de vendedor.
  * `sugerido` es el que más usaron los vendedores en los últimos 90 días
- * (empate: el más alto), para que cargar la lista no sea adivinar.
+ * (empate: el más alto), y `costo` el de la última reposición, para que
+ * cargar la lista no sea adivinar.
  */
 router.get("/precios", authenticate, soloAdmin, async (req, res) => {
   try {
@@ -58,7 +59,11 @@ router.get("/precios", authenticate, soloAdmin, async (req, res) => {
                ORDER BY COUNT(*) DESC, v.precio_unitario DESC LIMIT 1) AS sugerido,
              (SELECT MAX(st2.precio) FROM stock st2 JOIN gustos g3 ON g3.id = st2.gusto_id
                WHERE g3.producto_id = p.id AND st2.sucursal_id IN
-                 (SELECT sucursal_id FROM usuarios WHERE rol = 'vendedor')) AS precio_lista
+                 (SELECT sucursal_id FROM usuarios WHERE rol = 'vendedor')) AS precio_lista,
+             -- Costo: el de la última reposición de cualquier sabor del modelo
+             (SELECT r.precio_costo FROM reposiciones r JOIN gustos g4 ON g4.id = r.gusto_id
+               WHERE g4.producto_id = p.id AND r.precio_costo > 0
+               ORDER BY r.fecha DESC LIMIT 1) AS costo
         FROM productos p
         LEFT JOIN precios_vendedor pv ON pv.producto_id = p.id
        WHERE pv.precio IS NOT NULL OR EXISTS (
