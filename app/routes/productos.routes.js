@@ -114,8 +114,13 @@ router.post("/agregar", authenticate, authorizeAdmin, async (req, res) => {
         .promise()
         .query("SELECT id FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [gustoId, sucursal_id]);
       if (yaEnSucursal) {
+        // Solo Central recibe mercadería por orden de reposición; las demás
+        // sucursales la reciben siempre por transferencia desde Central.
+        const comoSumar = Number(sucursal_id) === 7
+          ? "usá una orden de reposición"
+          : "hacé una transferencia desde Central";
         return res.status(400).json({
-          error: `"${nombre} — ${String(gusto).trim().replace(/\s+/g, " ")}" ya existe en esta sucursal. Para sumar unidades usá una reposición o una transferencia.`,
+          error: `"${nombre} — ${String(gusto).trim().replace(/\s+/g, " ")}" ya existe en esta sucursal. Para sumar unidades, ${comoSumar}.`,
         });
       }
 
