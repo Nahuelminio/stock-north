@@ -90,18 +90,54 @@ router.post("/agregar", authenticate, authorizeAdmin, async (req, res) => {
       producto_id = insert.insertId;
     }
 
-    const [gustoInsert] = await pool
+    // Si ese modelo ya tiene un sabor con ese nombre, se usa ese y no se crea
+    // otro. Antes siempre se insertaba uno nuevo, y así aparecían dos "Watermelon
+    // ice" en el BC15000: el viejo dado de baja con toda su historia de ventas y
+    // costos, y uno nuevo vacío al lado. Se compara sin mayúsculas ni espacios
+    // de más, que es como se escapan los duplicados.
+    const [[existente]] = await pool
       .promise()
       .query(
-        "INSERT INTO gustos (producto_id, nombre, codigo_barra) VALUES (?, ?, ?)",
-        [producto_id, gusto, codigo_barra || null]
+        `SELECT id, activo FROM gustos
+          WHERE producto_id = ?
+            AND LOWER(REPLACE(TRIM(nombre), '  ', ' ')) = LOWER(REPLACE(TRIM(?), '  ', ' '))
+          ORDER BY activo DESC, id
+          LIMIT 1`,
+        [producto_id, gusto]
       );
+
+    let gustoId;
+    if (existente) {
+      gustoId = existente.id;
+
+      const [[yaEnSucursal]] = await pool
+        .promise()
+        .query("SELECT id FROM stock WHERE gusto_id = ? AND sucursal_id = ?", [gustoId, sucursal_id]);
+      if (yaEnSucursal) {
+        return res.status(400).json({
+          error: `"${nombre} — ${String(gusto).trim().replace(/\s+/g, " ")}" ya existe en esta sucursal. Para sumar unidades usá una reposición o una transferencia.`,
+        });
+      }
+
+      // Estaba dado de baja: vuelve, con su historia, en vez de nacer otro igual
+      if (!existente.activo) {
+        await pool.promise().query("UPDATE gustos SET activo = 1 WHERE id = ?", [gustoId]);
+      }
+    } else {
+      const [gustoInsert] = await pool
+        .promise()
+        .query(
+          "INSERT INTO gustos (producto_id, nombre, codigo_barra) VALUES (?, ?, ?)",
+          [producto_id, gusto, codigo_barra || null]
+        );
+      gustoId = gustoInsert.insertId;
+    }
 
     await pool
       .promise()
       .query(
         "INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio) VALUES (?, ?, ?, ?)",
-        [gustoInsert.insertId, sucursal_id, stock, precio]
+        [gustoId, sucursal_id, stock, precio]
       );
 
     // 🔁 Actualizar código para todos los gustos con mismo producto + gusto
