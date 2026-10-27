@@ -13,6 +13,7 @@
 const pool = require("../db");
 const { marcar, limpiar } = require("../movimientos");
 const { avisarVenta, chatDeVentas } = require("./telegram");
+const { precioDeGusto } = require("./preciosVendedor");
 
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_VENTAS || "";
 
@@ -70,6 +71,16 @@ async function registrarVenta({
       [cant, gid, sid]
     );
     await limpiar(conn);
+
+    // Un vendedor siempre paga el precio fijo de su modelo, nunca uno tipeado.
+    if (vendedorId) {
+      const fijo = await precioDeGusto(conn, gid);
+      if (fijo == null) {
+        await conn.rollback();
+        return { ok: false, error: "Este modelo todavía no tiene precio de vendedor. Avisale al administrador." };
+      }
+      precioUnitario = fijo;
+    }
 
     precioFinal =
       precioUnitario != null && !isNaN(Number(precioUnitario)) && Number(precioUnitario) >= 0

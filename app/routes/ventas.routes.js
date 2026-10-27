@@ -322,6 +322,7 @@ router.get("/buscar-por-codigo/:codigo", authenticate, async (req, res) => {
         p.nombre AS producto_nombre,
         g.nombre AS gusto,
         g.id AS gusto_id,
+        p.id AS producto_id,
         g.codigo_barra,
         st.precio AS precio
       FROM gustos g

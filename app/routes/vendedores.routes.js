@@ -37,6 +37,105 @@ function getSemanaActual() {
   };
 }
 
+const preciosVendedor = require("../services/preciosVendedor");
+
+/**
+ * GET /vendedores/precios
+ * Los modelos que hay en la sucursal de los vendedores (Central), con su precio de vendedor.
+ * `sugerido` es el que más usaron los vendedores en los últimos 90 días
+ * (empate: el más alto), para que cargar la lista no sea adivinar.
+ */
+router.get("/precios", authenticate, soloAdmin, async (req, res) => {
+  try {
+    await preciosVendedor.asegurarTabla();
+    const [filas] = await pool.promise().query(`
+      SELECT p.id AS producto_id, p.nombre,
+             pv.precio,
+             (SELECT v.precio_unitario FROM ventas v JOIN gustos g2 ON g2.id = v.gusto_id
+               WHERE g2.producto_id = p.id AND v.vendedor_id IS NOT NULL
+                 AND v.fecha > NOW() - INTERVAL 90 DAY
+               GROUP BY v.precio_unitario
+               ORDER BY COUNT(*) DESC, v.precio_unitario DESC LIMIT 1) AS sugerido,
+             (SELECT MAX(st2.precio) FROM stock st2 JOIN gustos g3 ON g3.id = st2.gusto_id
+               WHERE g3.producto_id = p.id AND st2.sucursal_id IN
+                 (SELECT sucursal_id FROM usuarios WHERE rol = 'vendedor')) AS precio_lista
+        FROM productos p
+        LEFT JOIN precios_vendedor pv ON pv.producto_id = p.id
+       WHERE pv.precio IS NOT NULL OR EXISTS (
+         SELECT 1 FROM gustos g JOIN stock st ON st.gusto_id = g.id
+          WHERE g.producto_id = p.id AND st.cantidad > 0
+            AND st.sucursal_id IN (SELECT sucursal_id FROM usuarios WHERE rol = 'vendedor'))
+       ORDER BY p.nombre
+    `);
+    res.json(filas);
+  } catch (e) {
+    console.error("❌ GET /vendedores/precios:", e);
+    res.status(500).json({ error: "No se pudieron traer los precios" });
+  }
+});
+
+/** PUT /vendedores/precios/:producto_id  { precio }  — vacío lo borra */
+router.put("/precios/:producto_id", authenticate, soloAdmin, async (req, res) => {
+  const productoId = Number(req.params.producto_id);
+  const crudo = req.body?.precio;
+  try {
+    await preciosVendedor.asegurarTabla();
+    if (crudo === null || crudo === undefined || crudo === "") {
+      await pool.promise().query("DELETE FROM precios_vendedor WHERE producto_id = ?", [productoId]);
+      return res.json({ ok: true, precio: null });
+    }
+    const precio = Number(crudo);
+    if (!Number.isFinite(precio) || precio <= 0) {
+      return res.status(400).json({ error: "Precio inválido" });
+    }
+    await pool.promise().query(
+      `INSERT INTO precios_vendedor (producto_id, precio) VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE precio = VALUES(precio)`,
+      [productoId, precio]
+    );
+    res.json({ ok: true, precio });
+  } catch (e) {
+    console.error("❌ PUT /vendedores/precios:", e);
+    res.status(500).json({ error: "No se pudo guardar el precio" });
+  }
+});
+
+/** GET /vendedores/mis-precios — el vendedor ve a cuánto le queda cada modelo */
+router.get("/mis-precios", authenticate, async (req, res) => {
+  try {
+    res.json(await preciosVendedor.mapa());
+  } catch (e) {
+    console.error("❌ GET /vendedores/mis-precios:", e);
+    res.status(500).json({ error: "No se pudieron traer los precios" });
+  }
+});
+
+/**
+ * GET /vendedores/mis-ventas-hoy
+ * Lo que cargó hoy el vendedor logueado, para que lo revise él mismo.
+ */
+router.get("/mis-ventas-hoy", authenticate, async (req, res) => {
+  if (req.user?.rol !== "vendedor") return res.status(403).json({ error: "Solo vendedores" });
+  try {
+    const [ventas] = await pool.promise().query(
+      `SELECT v.id, v.fecha, v.cantidad, v.precio_unitario,
+              p.nombre AS producto_nombre, g.nombre AS gusto
+         FROM ventas v
+         JOIN gustos g ON g.id = v.gusto_id
+         JOIN productos p ON p.id = g.producto_id
+        WHERE v.vendedor_id = ? AND DATE(v.fecha) = CURDATE()
+        ORDER BY v.fecha DESC`,
+      [req.user.id]
+    );
+    const unidades = ventas.reduce((s, v) => s + Number(v.cantidad), 0);
+    const total = ventas.reduce((s, v) => s + Number(v.cantidad) * Number(v.precio_unitario), 0);
+    res.json({ ventas, unidades, total });
+  } catch (e) {
+    console.error("❌ GET /vendedores/mis-ventas-hoy:", e);
+    res.status(500).json({ error: "No se pudieron traer tus ventas" });
+  }
+});
+
 /**
  * GET /vendedores/lista
  * Lista todos los vendedores con su sucursal
