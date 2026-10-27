@@ -8,13 +8,27 @@ const pool = require("../db");
 let tablaLista = null;
 function asegurarTabla() {
   if (!tablaLista) {
-    tablaLista = pool.promise().query(
-      `CREATE TABLE IF NOT EXISTS precios_vendedor (
-         producto_id INT NOT NULL PRIMARY KEY,
-         precio DECIMAL(12,2) NOT NULL,
-         actualizado DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-       )`
-    ).catch((e) => { tablaLista = null; throw e; });
+    tablaLista = (async () => {
+      await pool.promise().query(
+        `CREATE TABLE IF NOT EXISTS precios_vendedor (
+           producto_id INT NOT NULL PRIMARY KEY,
+           precio DECIMAL(12,2) NOT NULL,
+           recomendado DECIMAL(12,2) NULL,
+           actualizado DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+         )`
+      );
+      // La tabla nació sin `recomendado`; se agrega si falta.
+      const [[col]] = await pool.promise().query(
+        `SELECT COUNT(*) AS n FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'precios_vendedor'
+            AND COLUMN_NAME = 'recomendado'`
+      );
+      if (!col.n) {
+        await pool.promise().query(
+          "ALTER TABLE precios_vendedor ADD COLUMN recomendado DECIMAL(12,2) NULL AFTER precio"
+        );
+      }
+    })().catch((e) => { tablaLista = null; throw e; });
   }
   return tablaLista;
 }

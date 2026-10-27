@@ -51,7 +51,7 @@ router.get("/precios", authenticate, soloAdmin, async (req, res) => {
     await preciosVendedor.asegurarTabla();
     const [filas] = await pool.promise().query(`
       SELECT p.id AS producto_id, p.nombre,
-             pv.precio,
+             pv.precio, pv.recomendado,
              (SELECT v.precio_unitario FROM ventas v JOIN gustos g2 ON g2.id = v.gusto_id
                WHERE g2.producto_id = p.id AND v.vendedor_id IS NOT NULL
                  AND v.fecha > NOW() - INTERVAL 90 DAY
@@ -79,26 +79,34 @@ router.get("/precios", authenticate, soloAdmin, async (req, res) => {
   }
 });
 
-/** PUT /vendedores/precios/:producto_id  { precio }  — vacío lo borra */
+/**
+ * PUT /vendedores/precios/:producto_id  { precio, recomendado }
+ * `precio` vacío borra el modelo; `recomendado` vacío vuelve a usar la lista.
+ */
 router.put("/precios/:producto_id", authenticate, soloAdmin, async (req, res) => {
   const productoId = Number(req.params.producto_id);
-  const crudo = req.body?.precio;
+  const vacio = (v) => v === null || v === undefined || v === "";
+  const { precio: crudo, recomendado: crudoRec } = req.body || {};
   try {
     await preciosVendedor.asegurarTabla();
-    if (crudo === null || crudo === undefined || crudo === "") {
+    if (vacio(crudo)) {
       await pool.promise().query("DELETE FROM precios_vendedor WHERE producto_id = ?", [productoId]);
       return res.json({ ok: true, precio: null });
     }
     const precio = Number(crudo);
+    const recomendado = vacio(crudoRec) ? null : Number(crudoRec);
     if (!Number.isFinite(precio) || precio <= 0) {
       return res.status(400).json({ error: "Precio inválido" });
     }
+    if (recomendado !== null && (!Number.isFinite(recomendado) || recomendado <= 0)) {
+      return res.status(400).json({ error: "Precio recomendado inválido" });
+    }
     await pool.promise().query(
-      `INSERT INTO precios_vendedor (producto_id, precio) VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE precio = VALUES(precio)`,
-      [productoId, precio]
+      `INSERT INTO precios_vendedor (producto_id, precio, recomendado) VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE precio = VALUES(precio), recomendado = VALUES(recomendado)`,
+      [productoId, precio, recomendado]
     );
-    res.json({ ok: true, precio });
+    res.json({ ok: true, precio, recomendado });
   } catch (e) {
     console.error("❌ PUT /vendedores/precios:", e);
     res.status(500).json({ error: "No se pudo guardar el precio" });
@@ -112,6 +120,36 @@ router.get("/mis-precios", authenticate, async (req, res) => {
   } catch (e) {
     console.error("❌ GET /vendedores/mis-precios:", e);
     res.status(500).json({ error: "No se pudieron traer los precios" });
+  }
+});
+
+/**
+ * GET /vendedores/mi-lista
+ * Para el vendedor: lo que paga cada modelo que hay en su sucursal y a cuánto
+ * se recomienda venderlo (el que fijó el admin, o si no la lista del local).
+ */
+router.get("/mi-lista", authenticate, async (req, res) => {
+  if (req.user?.rol !== "vendedor") return res.status(403).json({ error: "Solo vendedores" });
+  try {
+    await preciosVendedor.asegurarTabla();
+    const [filas] = await pool.promise().query(
+      `SELECT p.id AS producto_id, p.nombre, pv.precio AS costo,
+              COALESCE(pv.recomendado,
+                (SELECT MAX(st2.precio) FROM stock st2 JOIN gustos g2 ON g2.id = st2.gusto_id
+                  WHERE g2.producto_id = p.id AND st2.sucursal_id = ?)) AS recomendado,
+              SUM(st.cantidad) AS stock
+         FROM productos p
+         JOIN gustos g ON g.producto_id = p.id
+         JOIN stock st ON st.gusto_id = g.id AND st.sucursal_id = ? AND st.cantidad > 0
+         JOIN precios_vendedor pv ON pv.producto_id = p.id
+        GROUP BY p.id, p.nombre, pv.precio, pv.recomendado
+        ORDER BY p.nombre`,
+      [req.user.sucursalId, req.user.sucursalId]
+    );
+    res.json(filas);
+  } catch (e) {
+    console.error("❌ GET /vendedores/mi-lista:", e);
+    res.status(500).json({ error: "No se pudo traer tu lista" });
   }
 });
 
