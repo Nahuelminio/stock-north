@@ -176,29 +176,49 @@ router.post("/:id/confirmar", authenticate, soloAdmin, async (req, res) => {
         });
       }
 
-      // Tomar el precio del stock de origen; si es 0 o null, usar el precio del producto
-      const [[stockOrigen]] = await conn.query(
-        "SELECT precio FROM stock WHERE gusto_id = ? AND sucursal_id = ?",
-        [item.gusto_id, t.sucursal_origen_id]
+      // El precio con el que entra un sabor que la sucursal destino no tenía.
+      //
+      // Primero, el que esa sucursal ya usa para el mismo modelo: cada local
+      // tiene su lista (Itaembe Punto 2 vende todos los BC15000 a $14.000
+      // aunque Central los tenga a $16.000), y un sabor nuevo de un modelo que
+      // ya vende tiene que entrar a ese precio, no al de Central. Si hay más de
+      // uno, el más repetido entre sus sabores; si empatan, el más alto.
+      //
+      // Si es el primer sabor de ese modelo en la sucursal, no hay lista que
+      // seguir y va el de origen.
+      const [[delModelo]] = await conn.query(
+        `SELECT st.precio, COUNT(*) AS veces
+           FROM stock st
+           JOIN gustos g ON g.id = st.gusto_id
+          WHERE st.sucursal_id = ? AND st.precio > 0
+            AND g.producto_id = (SELECT producto_id FROM gustos WHERE id = ?)
+            AND g.id <> ?
+          GROUP BY st.precio
+          ORDER BY veces DESC, st.precio DESC
+          LIMIT 1`,
+        [t.sucursal_destino_id, item.gusto_id, item.gusto_id]
       );
-      let precioOrigen = Number(stockOrigen?.precio) || 0;
+      let precioNuevo = Number(delModelo?.precio) || 0;
 
-      if (!precioOrigen) {
-        const [[prod]] = await conn.query(
-          "SELECT p.precio FROM productos p JOIN gustos g ON g.producto_id = p.id WHERE g.id = ?",
-          [item.gusto_id]
+      if (!precioNuevo) {
+        const [[stockOrigen]] = await conn.query(
+          "SELECT precio FROM stock WHERE gusto_id = ? AND sucursal_id = ?",
+          [item.gusto_id, t.sucursal_origen_id]
         );
-        precioOrigen = Number(prod?.precio) || 0;
+        precioNuevo = Number(stockOrigen?.precio) || 0;
       }
 
       // Sumar en destino — upsert atómico (requiere UNIQUE KEY (gusto_id, sucursal_id) en stock)
-      // Si la fila ya existe, solo suma cantidad (no pisa el precio que ya tiene la sucursal destino)
+      // Si la fila ya existe, solo suma cantidad y respeta el precio que tiene,
+      // salvo que esté en cero: un renglón sin precio se vendería regalado.
       await marcar(conn, "transferencia_entrada", { referencia: `transf ${req.params.id}`, usuarioId: req.user?.id });
       await conn.query(
         `INSERT INTO stock (gusto_id, sucursal_id, cantidad, precio)
          VALUES (?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE cantidad = cantidad + VALUES(cantidad)`,
-        [item.gusto_id, t.sucursal_destino_id, item.cantidad, precioOrigen]
+         ON DUPLICATE KEY UPDATE
+           cantidad = cantidad + VALUES(cantidad),
+           precio = IF(precio > 0, precio, VALUES(precio))`,
+        [item.gusto_id, t.sucursal_destino_id, item.cantidad, precioNuevo]
       );
       await limpiar(conn);
     }
