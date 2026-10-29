@@ -87,6 +87,13 @@ async function registrarVenta({
         ? Number(precioUnitario)
         : stockRow.precio;
 
+    // Una venta a $0 descuenta stock sin cobrar nada (pasó con un Lost Mary
+    // cuyo renglón no tenía precio). Mejor frenarla y que se cargue el precio.
+    if (!(Number(precioFinal) > 0)) {
+      await conn.rollback();
+      return { ok: false, error: "Este sabor no tiene precio en esta sucursal. Cargale el precio antes de vender." };
+    }
+
     const [ins] = await conn.query(
       `INSERT INTO ventas (gusto_id, sucursal_id, sucursal_stock_id, vendedor_id, cantidad, precio_unitario, fecha)
        VALUES (?, ?, ?, ?, ?, ?, NOW())`,
