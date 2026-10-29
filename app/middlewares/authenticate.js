@@ -21,7 +21,9 @@ const authenticate = (req, res, next) => {
 
     next();
   } catch (error) {
-    console.error("Error de autenticación:", error);
+    // Token vencido o roto es algo esperable (sesión vieja en un navegador):
+    // una línea alcanza, el stack completo solo ensuciaba los logs.
+    console.warn(`Auth rechazada (${error.name}: ${error.message}) en ${req.method} ${req.originalUrl}`);
     return res.status(401).json({ error: "Token inválido o expirado" });
   }
 };
