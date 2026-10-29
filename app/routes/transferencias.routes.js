@@ -50,6 +50,64 @@ router.get("/", authenticate, soloAdmin, async (req, res) => {
   }
 });
 
+// ── GET /transferencias/mias — las de la sucursal logueada ──────────────────
+// Un punto de venta ve lo que le mandaron y lo que mandó, con los sabores, pero
+// no puede crear, confirmar ni cancelar: eso sigue siendo del admin.
+// Va antes de /:id para que "mias" no se lea como un id.
+router.get("/mias", authenticate, async (req, res) => {
+  const sucursalId = Number(req.user?.sucursalId);
+  if (!sucursalId) return res.status(403).json({ error: "Tu usuario no tiene sucursal" });
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = 20;
+
+  try {
+    const [[{ total }]] = await pool.promise().query(
+      `SELECT COUNT(*) AS total FROM transferencias_stock
+        WHERE (sucursal_origen_id = ? OR sucursal_destino_id = ?) AND estado <> 'cancelada'`,
+      [sucursalId, sucursalId]
+    );
+    const [rows] = await pool.promise().query(
+      `SELECT t.id, t.estado, t.notas, t.fecha_creacion, t.fecha_confirmacion,
+              t.sucursal_origen_id, t.sucursal_destino_id,
+              so.nombre AS sucursal_origen, sd.nombre AS sucursal_destino
+         FROM transferencias_stock t
+         JOIN sucursales so ON so.id = t.sucursal_origen_id
+         JOIN sucursales sd ON sd.id = t.sucursal_destino_id
+        WHERE (t.sucursal_origen_id = ? OR t.sucursal_destino_id = ?) AND t.estado <> 'cancelada'
+        ORDER BY COALESCE(t.fecha_confirmacion, t.fecha_creacion) DESC
+        LIMIT ? OFFSET ?`,
+      [sucursalId, sucursalId, limit, (page - 1) * limit]
+    );
+
+    const ids = rows.map((r) => r.id);
+    const [items] = ids.length
+      ? await pool.promise().query(
+          `SELECT ti.transferencia_id, ti.cantidad, g.nombre AS gusto, p.nombre AS producto_nombre
+             FROM transferencia_stock_items ti
+             JOIN gustos g ON g.id = ti.gusto_id
+             JOIN productos p ON p.id = g.producto_id
+            WHERE ti.transferencia_id IN (?)
+            ORDER BY p.nombre, g.nombre`,
+          [ids]
+        )
+      : [[]];
+
+    const data = rows.map((t) => {
+      const suyos = items.filter((i) => i.transferencia_id === t.id);
+      return {
+        ...t,
+        entrada: t.sucursal_destino_id === sucursalId,
+        unidades: suyos.reduce((s, i) => s + Number(i.cantidad), 0),
+        items: suyos,
+      };
+    });
+    res.json({ data, total, totalPages: Math.ceil(total / limit) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Error al obtener tus transferencias" });
+  }
+});
+
 // ── GET /transferencias/:id — detalle con items ───────────────────────────────
 router.get("/:id", authenticate, soloAdmin, async (req, res) => {
   try {
