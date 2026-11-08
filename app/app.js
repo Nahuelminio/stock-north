@@ -54,6 +54,7 @@ app.use("/", require("./routes/public.routes"));
 app.use("/clientes", require("./routes/clientes.routes"));
 app.use("/", require("./routes/cuentas.routes"));
 app.use("/mayorista", require("./routes/mayorista.routes"));
+app.use("/mayorista", require("./routes/mayoristaExtras.routes"));
 app.use("/transferencias", require("./routes/transferencias.routes"));
 app.use("/ordenes-reposicion", require("./routes/ordenesReposicion.routes"));
 app.use("/vendedores", require("./routes/vendedores.routes"));
