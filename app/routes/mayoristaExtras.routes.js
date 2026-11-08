@@ -237,6 +237,31 @@ router.get("/pedidos-estado", async (req, res) => {
   }
 });
 
+// ─── costos ──────────────────────────────────────────────────────────────────
+
+// GET /mayorista/costos-usd — { "nombre del modelo": costo USD por unidad }
+// El de la última orden de reposición del modelo, con el pase incluido: es lo
+// mínimo que se le puede cobrar al mayorista sin perder plata.
+router.get("/costos-usd", soloAdmin, async (req, res) => {
+  try {
+    const [filas] = await pool.promise().query(`
+      SELECT p.nombre,
+             (SELECT i.precio_costo_usd
+                FROM orden_reposicion_items i
+                JOIN ordenes_reposicion o ON o.id = i.orden_id
+                JOIN gustos g ON g.id = i.gusto_id
+               WHERE g.producto_id = p.id AND i.precio_costo_usd > 0
+               ORDER BY o.id DESC, i.id DESC LIMIT 1) AS costo_usd
+        FROM productos p`);
+    res.json(Object.fromEntries(
+      filas.filter((f) => f.costo_usd != null).map((f) => [f.nombre, Number(f.costo_usd)])
+    ));
+  } catch (e) {
+    console.error("❌ costos-usd:", e);
+    res.status(500).json({ error: "No se pudieron traer los costos" });
+  }
+});
+
 // ─── clientes ────────────────────────────────────────────────────────────────
 
 // GET /mayorista/clientes-resumen — todos los clientes con lo que compraron y deben
